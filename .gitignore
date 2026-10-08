@@ -10,3 +10,10 @@ __pycache__/
 *.egg-info/
 coverage/
 *.tsbuildinfo
+.claude/
+.ruff_cache/
+handover.md
+*.zip
+agents/
+scripts/
+Start JobApplier.command
