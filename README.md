@@ -4,7 +4,7 @@
 <h1 align="center">JobApplier</h1>
 <p align="center">A personal job-application assistant that runs on your Mac.</p>
 
-## What it does
+## Description
 
 JobApplier keeps one master profile about you, reads job postings you give it, tailors your resume's skills
 section to each role (one page, always), drafts cover letters when a posting asks for one, fills application
@@ -24,8 +24,6 @@ LaTeX resumes (`brew install tectonic`). Optional: [Ollama](https://ollama.com) 
 git clone https://github.com/momran2401/jobapplier.git JobApplier && cd JobApplier
 ln -s "$PWD/bin/jobapplier" /opt/homebrew/bin/jobapplier   # one-command launcher
 ```
-
-The first run creates the Python environment, installs dependencies, and builds the dashboard.
 
 ## Run
 
