@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "job-applier"
+version = "0.1.0"
+description = "A local, review-first job application workspace"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "python-multipart>=0.0.20",
+  "httpx>=0.28,<1", "anthropic>=1,<2", "pydantic>=2.10,<3", "beautifulsoup4>=4.12,<5",
+  "pypdf>=5,<7", "keyring>=25,<26", "playwright>=1.51,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11"]
+
+[tool.setuptools.packages.find]
+include = ["jobapplier*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

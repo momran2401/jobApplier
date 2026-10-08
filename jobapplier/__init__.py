@@ -1,0 +1,1 @@
+"""Local job application assistant."""

@@ -1,0 +1,38 @@
+#!/bin/zsh
+# One command to run JobApplier: sets up what's missing, starts the server, opens the dashboard.
+#   jobapplier          start (or reuse a running server) and open http://127.0.0.1:8765
+#   jobapplier stop     stop the running server
+set -e
+ROOT="${0:A:h:h}"
+cd "$ROOT"
+URL="http://127.0.0.1:8765"
+
+running() { curl -s -m 1 -o /dev/null "$URL/api/bootstrap"; }
+
+if [[ "$1" == "stop" ]]; then
+  pids=$(lsof -t -iTCP:8765 -sTCP:LISTEN 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then kill $pids && echo "JobApplier stopped."; else echo "JobApplier is not running."; fi
+  exit 0
+fi
+
+if running; then
+  echo "JobApplier is already running at $URL"
+  open "$URL"
+  exit 0
+fi
+
+if [[ ! -x .venv/bin/python ]]; then
+  echo "Creating the Python environment..."
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -q --upgrade pip
+  .venv/bin/python -m pip install -q -e ".[dev]"
+  .venv/bin/python -m playwright install chromium >/dev/null 2>&1 || true
+fi
+if [[ ! -f frontend/dist/index.html ]]; then
+  echo "Building the dashboard..."
+  (cd frontend && npm install --silent && npm run build --silent)
+fi
+
+echo "JobApplier: $URL  (Control-C stops it; \`jobapplier stop\` from another terminal also works)"
+( for i in {1..40}; do running && { open "$URL"; break; }; sleep 0.5; done ) &
+exec .venv/bin/python -m uvicorn jobapplier.app:app --host 127.0.0.1 --port 8765 --no-access-log

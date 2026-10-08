@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "jobapplier",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "jobapplier.app:app", "--host", "127.0.0.1", "--port", "8765", "--no-access-log"],
+      "port": 8765
+    }
+  ]
+}
