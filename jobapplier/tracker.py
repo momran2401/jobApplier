@@ -30,7 +30,7 @@ FIELDS = {
 }
 MODE = {"manual": "Applied myself", "advisor": "Advisor", "assisted": "AI Applier", "autonomous": "Autonomous", "": ""}
 STATUS = {"new": "Queued", "preparing": "Preparing", "needs_attention": "Needs attention", "ready": "Ready to review",
-          "applied": "Applied", "advised": "Advised", "rejected": "Rejected", "offer": "Offer",
+          "applied": "Applied", "saved": "To apply", "advised": "Advised", "rejected": "Rejected", "offer": "Offer",
           "approved": "Approved", "submitting": "Submitting", "submitted": "Submitted", "uncertain": "Check outcome"}
 REFERRAL = {"not_sought": "Not sought", "pending": "Pending referral", "received": "Referral received",
             "proceed_without": "Proceed without referral"}

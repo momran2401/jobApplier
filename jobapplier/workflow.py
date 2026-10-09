@@ -214,7 +214,7 @@ class Workflow:
             if operation == "research":
                 await self.research(jid)
                 # Reading a posting never changes the outcome of something already applied to.
-                self.store.update(jid, {"status": prior if prior in {"applied", "advised"} else "needs_attention"}, invalidate=prior != "applied")
+                self.store.update(jid, {"status": prior if prior in {"applied", "advised", "saved"} else "needs_attention"}, invalidate=prior != "applied")
             elif operation == "advise":
                 await self.advise(jid)
             elif operation == "autonomous":
@@ -223,14 +223,14 @@ class Workflow:
                 async with self.browser.lock:
                     await self.prepare(jid)
         except asyncio.CancelledError:
-            self.store.update(jid, {"status": prior if prior == "applied" else "needs_attention", "error": "Paused. Resume when ready."})
+            self.store.update(jid, {"status": prior if prior in {"applied", "saved"} else "needs_attention", "error": "Paused. Resume when ready."})
         except Exception as exc:
             message = str(exc)[:1500]
             current = self.store.job(jid)["status"]
             if current in {"submitted", "uncertain", "submitting"}:
                 self.store.event(jid, message)
             else:
-                self.store.update(jid, {"status": prior if prior == "applied" else "needs_attention", "error": message})
+                self.store.update(jid, {"status": prior if prior in {"applied", "saved"} else "needs_attention", "error": message})
                 self.store.event(jid, message)
         finally:
             if self.store.settings()["sheet_sync_enabled"]:

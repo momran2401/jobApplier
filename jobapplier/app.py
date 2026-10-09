@@ -41,9 +41,11 @@ class Batch(BaseModel):
 
 class JobLog(BaseModel):
     url: str
+    stage: Literal["applied", "saved"] = "applied"  # saved = stored to apply later
     applied_at: str = ""
     signin_method: Literal["unknown", "google", "apple", "email_password", "other"] = "unknown"
     account_email: str = ""
+    password: str = ""  # saved to the Keychain for the company; never stored on the job
     account_created: bool = False
     referral_status: Literal["not_sought", "pending", "received", "proceed_without"] = "not_sought"
     referral_contact: str = ""
@@ -162,12 +164,16 @@ def create_app(data_dir=None):
 
     @app.post("/api/jobs/log")
     async def log_job(body: JobLog):
-        """Tracker mode: record an application you submitted yourself."""
+        """Tracker mode: record an application you submitted yourself, or store a job to apply to later."""
         job, created = store.add_job(body.url)
         if not created and job["status"] in {"submitted", "applied"}:
             raise ValueError("This job is already recorded as applied.")
+        if not created and body.stage == "saved" and job["status"] == "saved":
+            raise ValueError("This job is already saved.")
         applied_at = body.applied_at.strip() or now()[:10]
-        changes = {"status": "applied", "mode": "manual", "submitted_at": applied_at, "confirmation": "Applied myself",
+        stage = {"status": "applied", "submitted_at": applied_at, "confirmation": "Applied myself"} if body.stage == "applied" \
+            else {"status": "saved", "submitted_at": None, "confirmation": ""}
+        changes = {**stage, "mode": "manual",
                    "signin_method": body.signin_method, "account_email": body.account_email.strip(),
                    "account_created": body.account_created, "referral_status": body.referral_status,
                    "referral_contact": body.referral_contact.strip(), "review_notes": body.notes.strip(), "error": "",
@@ -189,9 +195,14 @@ def create_app(data_dir=None):
             updates["has_account"] = True
         if body.signin_method == "google":
             updates["google_signin"] = True
+        if body.password and body.signin_method in {"email_password", "other"}:
+            if not body.account_email.strip():
+                raise ValueError("Enter the account email with the password.")
+            save_secret("company:" + company["id"], json.dumps({"email": body.account_email.strip(), "password": body.password}))
+            updates.update(credential=True, account_email=body.account_email.strip(), has_account=True)
         if updates:
             store.save_company({**company, **updates})
-        store.event(job["id"], f"Recorded as applied on {applied_at}.")
+        store.event(job["id"], f"Recorded as applied on {applied_at}." if body.stage == "applied" else "Saved to apply later.")
         if not job.get("description"):
             workflow.start(job["id"], "research")  # fills title, company and deadline in the background
         elif store.settings()["sheet_sync_enabled"]:
@@ -225,6 +236,19 @@ def create_app(data_dir=None):
     async def research(jid: str):
         workflow.start(jid, "research")
         return {"started": True}
+
+    @app.post("/api/jobs/{jid}/applied")
+    async def mark_applied(jid: str):
+        """A stored (to apply) job you've now applied to yourself; keeps its notes and sign-in details."""
+        job = store.job(jid)
+        if job["status"] in {"submitted", "applied", "submitting"}:
+            raise ValueError("This job is already recorded as applied.")
+        job = store.update(jid, {"status": "applied", "mode": job.get("mode") or "manual", "submitted_at": now()[:10],
+                                 "confirmation": "Applied myself", "error": ""}, invalidate=False)
+        store.event(jid, f"Recorded as applied on {job['submitted_at']}.")
+        if store.settings()["sheet_sync_enabled"]:
+            asyncio.create_task(sheets.sync())
+        return job
 
     @app.post("/api/jobs/{jid}/answer")
     async def answer_job_question(jid: str, request: Request):

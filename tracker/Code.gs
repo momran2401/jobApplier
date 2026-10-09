@@ -16,7 +16,7 @@ const COLUMNS = [
   'Mode', 'Action required', 'Last email',
 ];
 const STATUSES = ['Queued', 'Preparing', 'Needs attention', 'Advised', 'Ready to review', 'Approved', 'Submitting', 'Submitted',
-  'Applied', 'Check outcome', 'Interview', 'Offer', 'Rejected', 'Withdrawn'];
+  'Applied', 'To apply', 'Check outcome', 'Interview', 'Offer', 'Rejected', 'Withdrawn'];
 const REFERRALS = ['Not sought', 'Pending referral', 'Referral received', 'Proceed without referral'];
 
 function onOpen() {

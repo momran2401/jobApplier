@@ -8,19 +8,24 @@ const REFERRAL = [['not_sought', 'No referral'], ['pending', 'Waiting on a refer
 
 /** Tracker mode: record an application you submitted yourself. The posting is read in the background to fill the rest. */
 export function LogJob({close, run, busy}: {close: () => void, run: Run, busy: string}) {
-  const [f, setF] = useState<Obj>({url: '', applied_at: new Date().toISOString().slice(0, 10), signin_method: 'unknown', account_email: '',
-    account_created: false, referral_status: 'not_sought', referral_contact: '', notes: '', title: '', company: ''});
+  const [f, setF] = useState<Obj>({stage: 'applied', url: '', applied_at: new Date().toISOString().slice(0, 10), signin_method: 'unknown', account_email: '',
+    password: '', account_created: false, referral_status: 'not_sought', referral_contact: '', notes: '', title: '', company: ''});
   const set = (k: string, v: any) => setF({...f, [k]: v});
+  // Email/password (or "other") sign-ins can save a password for the company; social sign-ins don't need one.
+  const needsPassword = ['email_password', 'other'].includes(f.signin_method);
   const valid = /^https?:\/\/\S+$/.test(f.url.trim());
   return <div className="overlay" onClick={close}><div className="modal wide" role="dialog" aria-modal="true" aria-label="Log an application" onClick={e => e.stopPropagation()}>
     <button className="icon-btn close" onClick={close} aria-label="Close"><X size={18}/></button>
     <span className="modal-orb"><ClipboardCheck size={22}/></span><h2>Log an application</h2>
     <p>For jobs you apply to yourself. The posting is read automatically to fill in the title, company, and deadline.</p>
+    <div className="segmented log-stage">{[['applied', 'Applied'], ['saved', 'Store · apply later']].map(([v, t]) =>
+      <button key={v} className={f.stage === v ? 'on' : ''} onClick={() => set('stage', v)}>{t}</button>)}</div>
     <div className="form-grid">
       <label className="field full">Job link<input autoFocus placeholder="https://…" value={f.url} onChange={e => set('url', e.target.value)}/></label>
-      <label className="field">Date applied<input type="date" value={f.applied_at} onChange={e => set('applied_at', e.target.value)}/></label>
+      {f.stage === 'applied' && <label className="field">Date applied<input type="date" value={f.applied_at} onChange={e => set('applied_at', e.target.value)}/></label>}
       <label className="field">How did you sign in?<select value={f.signin_method} onChange={e => set('signin_method', e.target.value)}>{SIGNIN.map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select></label>
-      <label className="field">Account email used<input placeholder="optional" value={f.account_email} onChange={e => set('account_email', e.target.value)}/></label>
+      <label className="field">Account email used<input placeholder={needsPassword ? 'required to save the password' : 'optional'} value={f.account_email} onChange={e => set('account_email', e.target.value)}/></label>
+      {needsPassword && <label className="field">Password<input type="password" autoComplete="new-password" placeholder="optional · saved in your Mac’s Keychain" value={f.password} onChange={e => set('password', e.target.value)}/></label>}
       <label className="check" style={{alignSelf: 'end'}}><input type="checkbox" checked={f.account_created} onChange={e => set('account_created', e.target.checked)}/>I created an account for this company</label>
       <label className="field">Referral<select value={f.referral_status} onChange={e => set('referral_status', e.target.value)}>{REFERRAL.map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select></label>
       <label className="field">Referral contact<input placeholder="optional" value={f.referral_contact} onChange={e => set('referral_contact', e.target.value)}/></label>
@@ -30,6 +35,6 @@ export function LogJob({close, run, busy}: {close: () => void, run: Run, busy: s
     </div>
     <div className="modal-foot"><span className="muted small">Saved to the dashboard and your tracker sheet.</span>
       <div><Button onClick={close}>Cancel</Button>
-        <Button primary disabled={!valid || !!busy} onClick={() => run('log', async () => {await api('/jobs/log', 'POST', {...f, url: f.url.trim()}); close();}, 'Application logged.')}><ClipboardCheck size={15}/>Log application</Button></div></div>
+        <Button primary disabled={!valid || !!busy || (needsPassword && !!f.password && !f.account_email.trim())} onClick={() => run('log', async () => {await api('/jobs/log', 'POST', {...f, url: f.url.trim(), password: needsPassword ? f.password : ''}); close();}, f.stage === 'saved' ? 'Saved to apply later.' : 'Application logged.')}><ClipboardCheck size={15}/>{f.stage === 'saved' ? 'Save job' : 'Log application'}</Button></div></div>
   </div></div>;
 }

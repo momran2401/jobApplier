@@ -724,3 +724,36 @@ async def test_company_logo_is_fetched_cached_and_served(tmp_path, monkeypatch):
         oc = await logos.ensure_logo(store, store.link_job_company(other["id"]))
         assert not oc.get("logo") and oc["logo_checked_at"]  # 404 recorded, no retry storm
         assert client.get(f"/api/logo/{oc['id']}", headers=h).status_code == 404
+
+
+def test_log_application_saves_password_to_keychain_only(tmp_path):
+    saved = {}
+    with patch("jobapplier.app.secret", return_value=None), patch("jobapplier.app.save_secret", side_effect=lambda k, v: saved.__setitem__(k, v)), \
+            TestClient(create_app(tmp_path)) as client:
+        h = {"x-workspace-token": client.get("/api/bootstrap").json()["token"]}
+        client.app.state.workflow.run = AsyncMock()
+        body = {"url": "https://jobs.example.com/9", "signin_method": "email_password", "account_email": "me@example.com", "password": "hunter2"}
+        job = client.post("/api/jobs/log", headers=h, json=body).json()
+        company = client.get("/api/state", headers=h).json()["companies"][0]
+        assert company["credential"] is True and company["account_email"] == "me@example.com"
+        assert "hunter2" in saved["company:" + company["id"]] and "hunter2" not in str(job)
+        assert "hunter2" not in client.get("/api/state", headers=h).text
+        # Social sign-in: any password sent is ignored.
+        saved.clear()
+        client.post("/api/jobs/log", headers=h, json={"url": "https://jobs.other.com/1", "signin_method": "google", "password": "x"})
+        assert saved == {}
+
+
+def test_store_job_to_apply_later_then_mark_applied(tmp_path):
+    with patch("jobapplier.app.secret", return_value=None), TestClient(create_app(tmp_path)) as client:
+        h = {"x-workspace-token": client.get("/api/bootstrap").json()["token"]}
+        client.app.state.workflow.run = AsyncMock()
+        job = client.post("/api/jobs/log", headers=h, json={"url": "https://jobs.example.com/7", "stage": "saved", "notes": "Due Friday",
+                                                            "signin_method": "google"}).json()
+        assert job["status"] == "saved" and job["submitted_at"] is None and job["review_notes"] == "Due Friday"
+        assert client.post("/api/jobs/log", headers=h, json={"url": "https://jobs.example.com/7", "stage": "saved"}).status_code == 400
+        from jobapplier.tracker import Tracker
+        assert Tracker(client.app.state.store).values(job)["status"] == "To apply"
+        done = client.post(f"/api/jobs/{job['id']}/applied", headers=h).json()
+        assert done["status"] == "applied" and done["submitted_at"] and done["review_notes"] == "Due Friday" and done["signin_method"] == "google"
+        assert client.post(f"/api/jobs/{job['id']}/applied", headers=h).status_code == 400

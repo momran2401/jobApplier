@@ -128,6 +128,7 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
       <footer className="drawer-foot"><span className="small muted">{job.sync_status === 'synced' ? 'Synced to your tracker' : job.sync_status === 'error' ? 'Tracker sync needs attention' : 'Saved locally'}</span>
         <div className="row-actions">{locked ? <Button onClick={() => run('pause', () => api(`/jobs/${job.id}/pause`, 'POST'))} disabled={job.status === 'submitting'}><Pause size={14}/>Pause</Button>
           : !['submitted', 'uncertain', 'applied'].includes(job.status) && <>
+            {job.status === 'saved' && <Button primary disabled={!!busy} onClick={() => run('applied', () => api(`/jobs/${job.id}/applied`, 'POST'), 'Marked as applied.')}><Check size={15}/>Mark as applied</Button>}
             <Button disabled={!!busy} onClick={() => run('research', () => api(`/jobs/${job.id}/research`, 'POST'))}><Search size={14}/>Read job</Button>
             <Button disabled={!!busy || !state.profile.verified} title={state.profile.verified ? 'Tailored skills, cover letter and answers — you apply yourself' : 'Verify your profile first'} onClick={() => run('advise', () => api(`/jobs/${job.id}/advise`, 'POST'))}><Lightbulb size={14}/>{p?.advice_at ? 'Refresh advice' : 'Get advice'}</Button>
             <Button disabled={!!busy || !state.profile.verified} title={state.profile.verified ? undefined : 'Verify your profile first'} onClick={() => run('prepare', () => api(`/jobs/${job.id}/prepare`, 'POST'))}><Play size={14}/>{p ? 'Resume preparation' : 'Prepare'}</Button>

@@ -69,6 +69,7 @@ export default function App() {
     || filter === 'review' && ['ready', 'approved', 'needs_attention'].includes(j.status)
     || filter === 'pending' && j.referral_status === 'pending'
     || filter === 'submitted' && ['submitted', 'applied'].includes(j.status)
+    || filter === 'saved' && j.status === 'saved'
     || filter === 'action' && j.action_required));
   const active = jobs.find(j => j.id === detail);
   const jobName = (id: string) => {const j = jobs.find(x => x.id === id); return j ? j.company || j.title : '';};
@@ -164,7 +165,7 @@ export default function App() {
           <section className="board">
             <div className="rule-head">
               <h2>All applications</h2>
-              <div className="filters">{(tracker ? [['all', 'All'], ['submitted', 'Applied'], ['pending', 'Referrals'], ['action', 'Action required']] : [['all', 'All'], ['review', 'To review'], ['pending', 'Referrals'], ['submitted', 'Submitted']]).map(([v, t]) =>
+              <div className="filters">{(tracker ? [['all', 'All'], ['submitted', 'Applied'], ['saved', 'To apply'], ['pending', 'Referrals'], ['action', 'Action required']] : [['all', 'All'], ['review', 'To review'], ['pending', 'Referrals'], ['submitted', 'Submitted']]).map(([v, t]) =>
                 <button key={v} className={filter === v ? 'on' : ''} onClick={() => setFilter(v)}>{t}{v === 'all' ? ` ${jobs.length}` : ''}</button>)}</div>
               <label className="search"><Search size={14}/><input placeholder="Search" aria-label="Search applications" value={query} onChange={e => setQuery(e.target.value)}/></label>
             </div>

@@ -439,3 +439,6 @@ pre.tex { max-height: 320px; }
 .logo.dark img { filter: grayscale(1) invert(1) brightness(1.05) contrast(1.05); }
 .logo .initials { position: absolute; inset: 0; display: grid; place-items: center; }
 .row .company .logo { flex: none; }
+
+.log-stage { margin-bottom: 16px; }
+.s-saved { color: var(--muted-2); }

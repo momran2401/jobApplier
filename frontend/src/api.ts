@@ -29,7 +29,7 @@ export async function api(path: string, method = 'GET', body?: unknown, retry = 
 
 export const labels: Obj = {
   new: 'Queued', preparing: 'Preparing', needs_attention: 'Needs attention', ready: 'Ready to review',
-  approved: 'Approved', submitting: 'Submitting', submitted: 'Submitted', uncertain: 'Check outcome', applied: 'Applied', advised: 'Advised', rejected: 'Rejected', offer: 'Offer',
+  approved: 'Approved', submitting: 'Submitting', submitted: 'Submitted', uncertain: 'Check outcome', applied: 'Applied', saved: 'To apply', advised: 'Advised', rejected: 'Rejected', offer: 'Offer',
   pending: 'Pending referral', not_sought: 'Not sought', received: 'Referral received', proceed_without: 'Proceed without referral',
 };
 export const initials = (name: string) => (name || '?').split(/[ .-]+/).filter(Boolean).slice(0, 2).map(x => x[0]).join('').toUpperCase();
