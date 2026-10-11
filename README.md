@@ -68,3 +68,7 @@ Copyright © 2026 Mustafa Omran. All rights reserved. Personal software, provide
 any kind. You are responsible for every application it submits on your behalf and for complying with the terms
 of the job portals, LinkedIn, Google, OpenAI and Anthropic services you connect to it. It never invents
 qualifications; check its output before you rely on it.
+
+## Manual
+
+The complete manual, screen by screen, is [docs/MANUAL.md](docs/MANUAL.md).
