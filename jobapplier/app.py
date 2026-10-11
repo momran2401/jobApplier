@@ -18,11 +18,13 @@ from . import logos
 from . import profile as profiledoc
 from .ai import local_base, model_list, ollama_models, start_ollama
 from .browser import Browser
+from .discover import find_new
 from .documents import MAX_FILE, save_upload
 from .monitor import Monitor
 from .networking import Networking
 from .security import save_secret, secret
 from .store import Store, normalize_company, now
+from .sync import Sync
 from .tracker import FIELDS, SCRIPT, Tracker
 from .workflow import Workflow, fetch_text
 
@@ -82,6 +84,7 @@ def create_app(data_dir=None):
     monitor = Monitor(store, sheets)
     workflow = Workflow(store, browser, sheets)
     networking = Networking(store, browser, workflow)
+    sync = Sync(store, lambda: secret("sync_passphrase"))
     token = secrets.token_urlsafe(40)
 
     @asynccontextmanager
@@ -89,7 +92,10 @@ def create_app(data_dir=None):
         store.recover()
         monitor.start_background(store.settings().get("monitor_minutes") or 0)
         asyncio.create_task(logos.fill_missing(store))
+        sync.start_background()
         yield
+        sync.stop()
+        await sync.flush()
         await workflow.stop()
 
     app = FastAPI(title="JobApplier", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -142,9 +148,10 @@ def create_app(data_dir=None):
                 "tracker": store.get("tracker"), "usage": store.get("usage", {}),
                 "last_inference": store.get("last_inference"), "progress": workflow.progress, "monitor": monitor.state(),
                 "batch_running": bool(workflow.batch_task and not workflow.batch_task.done()),
-                "events": store.events(), "sheet_fields": FIELDS, "networking": networking.summary(),
+                "events": store.events(), "sheet_fields": FIELDS, "networking": networking.summary(), "sync": sync.state(),
+                "discovered": store.get("discovered", {}), "discover_last": store.get("discover_last"),
                 "capabilities": {"latex": bool(shutil.which("tectonic") or shutil.which("pdflatex")),
-                                 "anthropic_key": bool(secret("anthropic_key")),
+                                 "anthropic_key": bool(secret("anthropic_key")), "sync_passphrase": bool(secret("sync_passphrase")),
                                  "codex": bool(shutil.which("codex") or os.path.exists("/opt/homebrew/bin/codex")), "tracker_connected": sheets.connected()}}
 
     @app.post("/api/jobs")
@@ -160,6 +167,11 @@ def create_app(data_dir=None):
                     if body.mode in {"assisted", "autonomous"}:
                         store.setup_questions(company["id"], job["id"])
                 (imported if created else duplicates).append(job["id"])
+                found = store.get("discovered", {})
+                if job["url"] in found or url.split("?")[0].rstrip("/") in found:
+                    found.pop(job["url"], None)
+                    found.pop(url.split("?")[0].rstrip("/"), None)
+                    store.set("discovered", found)
             except ValueError as exc:
                 errors.append({"url": url, "error": str(exc)})
         return {"imported": imported, "duplicates": duplicates, "errors": errors}
@@ -490,7 +502,8 @@ def create_app(data_dir=None):
     async def save_settings(request: Request):
         changes = await request.json()
         allowed = {"provider", "model", "ollama_url", "max_model_calls", "max_output_tokens", "tex_main", "skills_start", "skills_end", "fallback_enabled", "fallback_model", "ollama_context", "ollama_timeout", "effort", "fast_model", "always_letter", "match_enabled", "match_github", "default_mode", "autonomous_daily_cap", "autonomous_delay_minutes",
-                   "monitor_minutes", "text_phone", "text_gateway", "text_kinds", "quiet_from", "quiet_to"}
+                   "monitor_minutes", "text_phone", "text_gateway", "text_kinds", "quiet_from", "quiet_to",
+                   "sync_enabled", "sync_folder", "sync_minutes", "discover_keywords"}
         if set(changes) - allowed:
             raise ValueError("Unknown settings.")
         settings = {**store.settings(), **changes}
@@ -501,7 +514,7 @@ def create_app(data_dir=None):
         if settings["default_mode"] not in {"assisted", "advisor", "autonomous"} or not all(isinstance(settings[k], bool) for k in ("always_letter", "match_enabled", "match_github")):
             raise ValueError("Invalid mode settings.")
         for field, low, high in [("autonomous_daily_cap", 1, 50), ("autonomous_delay_minutes", 0, 120), ("monitor_minutes", 0, 240),
-                                 ("quiet_from", 0, 23), ("quiet_to", 0, 23)]:
+                                 ("quiet_from", 0, 23), ("quiet_to", 0, 23), ("sync_minutes", 1, 60)]:
             if type(settings[field]) is not int or not low <= settings[field] <= high:
                 raise ValueError(f"{field} must be an integer between {low} and {high}.")
         if not isinstance(settings["fallback_enabled"], bool) or not isinstance(settings["fallback_model"], str) or not settings["fallback_model"].strip():
@@ -524,14 +537,20 @@ def create_app(data_dir=None):
             raise ValueError("Unknown text gateway.")
         if not isinstance(settings["text_kinds"], list) or set(settings["text_kinds"]) - {"interview", "assessment", "action_required", "offer", "rejection", "confirmation"}:
             raise ValueError("Invalid text notification kinds.")
+        if not isinstance(settings.get("discover_keywords", ""), str):
+            raise ValueError("Keywords must be text.")
+        if not isinstance(settings["sync_enabled"], bool) or not isinstance(settings["sync_folder"], str):
+            raise ValueError("Invalid sync settings.")
+        settings["sync_folder"] = settings["sync_folder"].strip()
         store.set("settings", settings)
         monitor.start_background(settings["monitor_minutes"])
+        sync.start_background()
         return settings
 
     @app.post("/api/secrets")
     async def save_credentials(request: Request):
         body = await request.json()
-        if body.get("name") != "anthropic_key":
+        if body.get("name") not in {"anthropic_key", "sync_passphrase"}:
             raise ValueError("Unknown credential type.")
         save_secret(body["name"], body["value"])
         return {"saved": True}
@@ -609,6 +628,27 @@ def create_app(data_dir=None):
         if kind == "csv":
             return PlainTextResponse(networking.list_csv(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="networking-list.csv"'})
         return PlainTextResponse(networking.drafts_md(), media_type="text/markdown", headers={"Content-Disposition": 'attachment; filename="drafts.md"'})
+
+    @app.post("/api/discover")
+    async def discover_jobs():
+        """Check the job boards of the companies you track for new postings (no AI, no scraping)."""
+        return await find_new(store)
+
+    @app.post("/api/discover/dismiss")
+    async def discover_dismiss(request: Request):
+        body = await request.json()
+        url = str(body.get("url", ""))
+        found = store.get("discovered", {})
+        if url in found:
+            found.pop(url)
+            store.set("discovered", found)
+            store.set("discover_dismissed", {**store.get("discover_dismissed", {}), url: now()})
+        return {"dismissed": url}
+
+    @app.post("/api/sync/now")
+    async def sync_now():
+        """Pull the other Macs' changes and push ours, right now."""
+        return await sync.run_once()
 
     @app.post("/api/stop")
     async def stop_everything():

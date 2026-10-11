@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {ArrowUpRight, Check, CircleAlert, ClipboardCheck, Link2, LoaderCircle, Mail, Plus, RefreshCw, Search, ShieldCheck, Square, X} from 'lucide-react';
+import {ArrowUpRight, Check, CircleAlert, ClipboardCheck, Link2, LoaderCircle, Mail, Plus, Radar, RefreshCw, Search, ShieldCheck, Square, X} from 'lucide-react';
 import {ago, api, date, hasToken, labels, Obj, setToken} from './api';
 import {Button, Logo} from './ui';
 import {Profile} from './screens/Profile';
@@ -95,6 +95,16 @@ export default function App() {
   const summary = tracker
     ? <>You have <Em n={actionJobs.length} tone="amber"/> needing action, <Em n={questions.length} tone="amber"/> to answer, and <Em n={held.length} tone="amber"/> waiting on a referral.</>
     : <>You have <Em n={reviewJobs.length} tone="blue"/> ready to review, <Em n={questions.length} tone="amber"/> to answer, and <Em n={held.length} tone="amber"/> waiting on a referral.</>;
+  const discovered: Obj[] = (Object.values(state.discovered || {}) as Obj[]).sort((a: any, b: any) => (b.found_at || '').localeCompare(a.found_at || ''));
+  const funnel = (() => {  // Tracker: how applications are doing, from data already in the workspace
+    const sent = jobs.filter(j => ['submitted', 'applied', 'rejected', 'offer'].includes(j.status));
+    const replied = sent.filter(j => j.last_email || j.action_required || ['rejected', 'offer'].includes(j.status));
+    const interviews = sent.filter(j => j.action_required?.kind === 'interview' || j.last_email?.kind === 'interview');
+    const rejected = sent.filter(j => j.status === 'rejected'), offers = sent.filter(j => j.status === 'offer');
+    const withRef = sent.filter(j => j.referral_status === 'received'), refAdvanced = withRef.filter(j => replied.includes(j) && j.status !== 'rejected');
+    const byMode = ['manual', 'advisor', 'assisted', 'autonomous'].map(m => [m, sent.filter(j => (j.mode || 'manual') === m).length, sent.filter(j => (j.mode || 'manual') === m && replied.includes(j) && j.status !== 'rejected').length] as const).filter(x => x[1] > 0);
+    return {sent, replied, interviews, rejected, offers, withRef, refAdvanced, byMode};
+  })();
   const runningNote = runningNames.length ? ` ${runningNames[0]}${runningNames.length > 1 ? ` and ${runningNames.length - 1} more` : ''} ${runningNames.length > 1 ? 'are' : 'is'} being worked on right now.` : '';
 
   return <div className="app">
@@ -160,6 +170,26 @@ export default function App() {
           </section>
         </div>
 
+        {!tracker && (discovered.length > 0 || state.discover_last) && <section className="board found">
+          <div className="rule-head"><h2>New postings at companies you track <span className="count">{discovered.length}</span></h2>
+            <div className="row-actions" style={{margin: 0}}><button className="pill" disabled={!!busy} onClick={() => run('discover', async () => {const r = await api('/discover', 'POST'); setNotice(`Checked ${r.checked} job board${r.checked === 1 ? '' : 's'}: ${r.new} new posting${r.new === 1 ? '' : 's'}.${r.errors.length ? ' ' + r.errors.join(' ') : ''}`);})}><Radar size={13}/>Check now</button>
+              <span className="small muted">{state.discover_last ? `Last check ${ago(state.discover_last.at)} · keywords in Settings` : ''}</span></div></div>
+          {discovered.length === 0 ? <p className="col-empty">Nothing new since the last check.</p> : <div className="rows">{discovered.slice(0, 12).map(d => <div className="row no-check" key={d.url}>
+            <span className="serif company">{d.company}</span>
+            <span className="row-main"><span className="title"><a href={d.url} target="_blank" rel="noreferrer">{d.title}</a></span><span className="sub">{d.location}</span></span>
+            <span className="row-date">{date(d.found_at)}</span>
+            <span className="row-actions" style={{margin: 0}}><button className="pill" disabled={!!busy} onClick={() => run('import', () => api('/jobs', 'POST', {urls: [d.url], mode: s.default_mode}), 'Added.')}><Plus size={12}/>Add</button>
+              <button className="text-link" disabled={!!busy} onClick={() => run('dismiss', () => api('/discover/dismiss', 'POST', {url: d.url}))}>Dismiss</button></span>
+          </div>)}</div>}
+        </section>}
+        {tracker && funnel.sent.length > 0 && <section className="board funnel">
+          <div className="rule-head"><h2>How it’s going</h2></div>
+          <div className="funnel-row">
+            {[['Applied', funnel.sent.length], ['Replies', funnel.replied.length], ['Interviews', funnel.interviews.length], ['Offers', funnel.offers.length], ['Rejections', funnel.rejected.length]].map(([t, n]) => <div key={t as string}><b>{n}</b><span>{t}</span></div>)}
+            <div><b>{funnel.withRef.length ? `${funnel.refAdvanced.length}/${funnel.withRef.length}` : '—'}</b><span>Advanced with a referral</span></div>
+            {funnel.byMode.map(([m, n, adv]) => <div key={m}><b>{adv}/{n}</b><span>Advanced · {m}</span></div>)}
+          </div>
+        </section>}
         <div className="board-grid">
           <section className="board">
             <div className="rule-head">
@@ -177,7 +207,7 @@ export default function App() {
                 return <div className={'row' + (tracker ? ' no-check' : '')} key={j.id} role="button" tabIndex={0} onClick={() => setDetail(j.id)} onKeyDown={e => {if (e.key === 'Enter') setDetail(j.id);}}>
                   {!tracker && <span className="row-check" onClick={e => e.stopPropagation()}>{selectable && <input type="checkbox" aria-label={`Select ${j.title}`} checked={selected.includes(j.id)} onChange={e => setSelected(e.target.checked ? [...selected, j.id] : selected.filter(x => x !== j.id))}/>}</span>}
                   <span className="serif company"><Logo company={companyOf(j)} name={j.company} size={30}/>{j.company}{j.mode === 'autonomous' && <span className="tag auto" title="Autonomous: submits without review">auto</span>}</span>
-                  <span className="row-main"><span className="title">{j.title || 'Reading posting…'}</span><span className="sub">{j.location || (j.posting_kind === 'expression_of_interest' ? 'Expression of interest' : '')}</span></span>
+                  <span className="row-main"><span className="title">{j.title || 'Reading posting…'}{['closed', 'expired'].includes(j.posting_status) && <span className="tag amber" title={`Posting looked ${j.posting_status} on ${j.posting_checked_at}`}>{j.posting_status}</span>}</span><span className="sub">{j.location || (j.posting_kind === 'expression_of_interest' ? 'Expression of interest' : '')}</span></span>
                   {state.progress?.[j.id] ? <span className="status s-preparing"><i/>{state.progress[j.id].stage}</span> : <span className={'status s-' + j.status}><i/>{labels[j.status] || j.status}</span>}
                   <span className="row-ref">{j.referral_status === 'pending' ? <span className="amber">Referral hold</span> : j.referral_status === 'received' ? <span className="green">Referral</span> : j.action_required ? <span className="amber">Action</span> : '—'}</span>
                   <span className="row-date" title={tracker ? 'Date applied' : 'Date added'}>{date(tracker ? (j.submitted_at || j.created_at) : j.created_at)}</span>

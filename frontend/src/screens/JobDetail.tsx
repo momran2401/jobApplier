@@ -26,7 +26,7 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
         <div><h2>{job.title || 'Untitled role'}</h2><p>{job.company}{job.location ? ' · ' + job.location : ''}</p></div>
         <button className="icon-btn" onClick={close} aria-label="Close application"><X size={19}/></button>
       </header>
-      <div className="drawer-status"><Badge status={job.status}/>{job.referral_status === 'pending' && <Badge status="pending"/>}
+      <div className="drawer-status"><Badge status={job.status}/>{job.referral_status === 'pending' && <Badge status="pending"/>}{['closed', 'expired'].includes(job.posting_status) && <span className="badge s-rejected"><i/>Posting {job.posting_status}</span>}
         <a className="text-link" href={job.url} target="_blank" rel="noreferrer">View posting <ExternalLink size={12}/></a></div>
       <div className="segmented drawer-tabs">{tabs.map(t =>
         <button className={view === t ? 'on' : ''} key={t} onClick={() => setView(t)}>{t[0].toUpperCase() + t.slice(1)}{t === 'activity' && events.length ? ` · ${events.length}` : ''}</button>)}</div>
@@ -45,6 +45,7 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
             <div><span>NEXT STEP</span><p>{nextStep}</p></div>
           </div>
           {job.requirements?.length > 0 && <div className="sub-panel"><h3>Requirements</h3><div className="skill-cloud">{job.requirements.map((r: string, i: number) => <span key={i}>{r}</span>)}</div></div>}
+          {['closed', 'expired'].includes(job.posting_status) && <div className="hint warn"><CircleAlert size={16}/><span>This posting looked {job.posting_status} when it was last read ({job.posting_checked_at}). Check the page before spending time on it.</span></div>}
           {job.fit_flags?.length > 0 && <div className="sub-panel warn-panel"><h3>Fit flags</h3><ul>{job.fit_flags.map((f: string, i: number) => <li key={i}>{f}</li>)}</ul>
             {!job.fit_acknowledged && <Button disabled={locked || !!busy} onClick={() => run('fit', () => mutate({fit_acknowledged: true}), 'Fit concerns acknowledged.')}>Continue despite flags</Button>}</div>}
           <div className="sub-panel"><h3><Users size={15}/>Referral</h3><p className="small muted">A pending referral blocks submission, even when everything else is approved.</p>
@@ -84,11 +85,12 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
           {p.letter && <div className="sub-panel"><div className="sub-head"><h3>Cover letter</h3><div className="row-actions" style={{margin: 0}}>
             <Button onClick={() => copy('letter', p.letter)}><Copy size={13}/>{copied === 'letter' ? 'Copied' : 'Copy text'}</Button>
             {p.letter_pdf && <a className="btn" href={'/api/file/' + p.letter_pdf.path} target="_blank" rel="noreferrer">Open PDF <ExternalLink size={13}/></a>}</div></div>
+            <FactCheck c={p.letter_check}/>
             <div className="letter">{p.letter}</div></div>}
           {p.likely_questions?.length > 0 && <div className="sub-panel"><h3>Likely application questions</h3>
             {p.likely_questions.map((q: Obj, i: number) => <div className="qa" key={i}><strong>{q.question}</strong>
               <p className={String(q.answer).startsWith('NEEDS:') ? 'warn-text' : ''}>{q.answer || 'Not in your profile yet.'}</p>
-              <small>{q.confidence ? `Confidence: ${q.confidence}` : ''}</small></div>)}</div>}
+              <small>{q.confidence ? `Confidence: ${q.confidence}` : ''}{q.check ? <span className="amber"> · Fact-check: {q.check}</span> : ''}</small></div>)}</div>}
           {company?.research?.summary && <div className="sub-panel"><h3>About {company.name}</h3><p>{company.research.summary}</p>
             {company.research.products?.length > 0 && <div className="skill-cloud">{company.research.products.map((x: string) => <span key={x}>{x}</span>)}</div>}
             {company.research.hiring_notes?.length > 0 && <ul>{company.research.hiring_notes.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul>}
@@ -104,7 +106,7 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
           {p.selected_skills?.length > 0 && <div className="sub-panel"><h3>Skills selected for this role</h3><div className="skill-cloud">{p.selected_skills.map((s: string) => <span key={s}>{s}</span>)}</div></div>}
           {p.resume.diff && <div className="sub-panel"><h3>What changed</h3><pre className="diff">{p.resume.diff}</pre></div>}
           {p.suggested_edits?.length > 0 && <EditsPanel job={job} p={p} run={run} busy={busy} locked={locked}/>}
-          {p.letter && <div className="sub-panel"><h3>Cover-letter draft</h3><div className="letter">{p.letter}</div></div>}
+          {p.letter && <div className="sub-panel"><h3>Cover-letter draft</h3><FactCheck c={p.letter_check}/><div className="letter">{p.letter}</div></div>}
           {canReview && !p.visual_reviewed && <Button primary disabled={!!busy} onClick={() => run('review', () => api(`/jobs/${job.id}/review`, 'POST', {revision: job.revision}), 'Document review recorded.')}><CheckCheck size={15}/>I’ve reviewed the PDF and its layout</Button>}
           {p.visual_reviewed && <span className="ok-text"><CheckCheck size={16}/> Document review complete</span>}
         </>)}
@@ -183,4 +185,11 @@ function MatchPanel({m}: {m: Obj}) {
       <p className="small muted">Plain text matching against the tailored PDF, the way a recruiter's keyword search works. Repeatable; no AI involved.</p>
       <ul className="coverage">{m.coverage.requirements.map((r: Obj, i: number) => <li key={i} className={r.covered ? 'ok' : 'miss'}>{r.covered ? <Check size={13}/> : <X size={13}/>}<span>{r.text}</span>{r.missing.length > 0 && <small>missing: {r.missing.join(', ')}</small>}</li>)}</ul></div>}
   </>;
+}
+
+/** Result of the deterministic fact-check on a generated text: unsupported numbers block, unverified names warn. */
+function FactCheck({c}: {c?: Obj}) {
+  if (!c) return null;
+  if (!c.blocking?.length && !c.warnings?.length) return <p className="small ok-text">Fact-check passed: every number and name appears in your profile or the posting.</p>;
+  return <div className="hint warn"><CircleAlert size={16}/><span>{c.blocking?.length > 0 && <><strong>Not in your sources:</strong> {c.blocking.join(', ')}. </>}{c.warnings?.length > 0 && <><strong>Check these names:</strong> {c.warnings.join(', ')}.</>}</span></div>;
 }

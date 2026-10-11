@@ -39,6 +39,8 @@ DEFAULT_SETTINGS = {
     "tex_main": "", "skills_start": "", "skills_end": "",
     "always_letter": False, "default_mode": "assisted", "match_enabled": True, "match_github": True,
     "autonomous_daily_cap": 10, "autonomous_delay_minutes": 5,
+    "sync_enabled": False, "sync_folder": "", "sync_minutes": 1,
+    "discover_keywords": "intern, internship, co-op, new grad, early career",
     "monitor_minutes": 0, "text_phone": "", "text_gateway": "tmomail.net", "text_kinds": ["interview", "action_required", "offer"],
     "quiet_from": 22, "quiet_to": 8,
 }
@@ -60,6 +62,7 @@ class Store:
               CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, data TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS people (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS kv_times (key TEXT PRIMARY KEY, updated_at TEXT NOT NULL);
             """)
         os.chmod(self.path, 0o600)
         (self.root / "profile" / "history").mkdir(parents=True, exist_ok=True)
@@ -226,9 +229,11 @@ class Store:
             c.execute("INSERT OR REPLACE INTO people VALUES (?,?)", (person["id"], json.dumps(person)))
         return person
 
-    def delete_person(self, pid):
+    def delete_person(self, pid, tombstone=True):
         with self.connection() as c:
             c.execute("DELETE FROM people WHERE id=?", (pid,))
+        if tombstone:  # so the deletion reaches the other Macs instead of the person coming back
+            self.set("tombstones", {**self.get("tombstones", {}), pid: now()})
 
     def new_person_id(self):
         """person-001, person-002, ... — a counter that never reuses an ID, so IDs stay stable across reruns and deletions."""
@@ -255,9 +260,38 @@ class Store:
             row = c.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
         return json.loads(row[0]) if row else default
 
-    def set(self, key, value):
+    def set(self, key, value, at=None):
         with self.connection() as c:
             c.execute("INSERT OR REPLACE INTO kv VALUES (?,?)", (key, json.dumps(value)))
+            c.execute("INSERT OR REPLACE INTO kv_times VALUES (?,?)", (key, at or now()))
+
+    def kv_items(self):
+        with self.connection() as c:
+            rows = c.execute("SELECT key, value FROM kv").fetchall()
+        return [(r[0], json.loads(r[1])) for r in rows]
+
+    def kv_times(self):
+        """When each kv key was last written (for sync's newest-wins merge)."""
+        with self.connection() as c:
+            return {r[0]: r[1] for r in c.execute("SELECT key, updated_at FROM kv_times").fetchall()}
+
+    def put_job(self, job):
+        """Raw upsert used by sync: no revision bump, no approval invalidation, no sheet flag."""
+        with self.connection() as c:
+            c.execute("INSERT OR REPLACE INTO jobs VALUES (?,?,?,?)", (job["id"], job["url"], job["revision"], json.dumps(job)))
+        return job
+
+    def events_all(self, limit=500):
+        with self.connection() as c:
+            rows = c.execute("SELECT job_id, at, message FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_event_if_missing(self, at, job_id, message):
+        with self.connection() as c:
+            if c.execute("SELECT 1 FROM events WHERE at=? AND message=? AND (job_id IS ? OR job_id=?)", (at, message, job_id, job_id)).fetchone():
+                return False
+            c.execute("INSERT INTO events(job_id,at,message) VALUES (?,?,?)", (job_id, at, message))
+        return True
 
     def settings(self):
         saved = dict(self.get("settings", {}))
@@ -291,7 +325,8 @@ class Store:
                    "referral_contact": "", "referral_notes": "", "review_notes": "",
                    "signin_method": "unknown", "account_email": "", "account_created": False,
                    "portal_url": "", "status_url": "", "requisition_id": "", "location": "",
-                   "deadline": "", "posting_kind": "opening", "fit_flags": [], "fit_acknowledged": False,
+                   "deadline": "", "posting_kind": "opening", "posting_status": "unverified", "posting_checked_at": "",
+                   "fit_flags": [], "fit_acknowledged": False,
                    "created_at": now(), "updated_at": now(), "package": None, "approval": None,
                    "sync_status": "pending", "sync_error": "", "last_sync_at": None,
                    "error": "", "submitted_at": None, "confirmation": "", "description": "",

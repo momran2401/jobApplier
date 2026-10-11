@@ -9,9 +9,39 @@ from bs4 import BeautifulSoup
 from . import profile as profiledoc
 from .ai import Model
 from .documents import build_letter, build_resume, main_tex, validate_edits
+from .factcheck import check as fact_check
+from .factcheck import describe as fact_describe
 from .match import match_report
 from .security import company_credential, public_url
 from .store import now, package_hash, submission_block
+
+
+def job_posting(soup):
+    """Schema.org JobPosting from the page's JSON-LD, when the site publishes one (most ATS pages do). Structured
+    fields beat guessing from page text, and the description survives on pages that render the rest with JavaScript."""
+    import json as _json
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = _json.loads(tag.string or "")
+        except ValueError:
+            continue
+        items = data if isinstance(data, list) else data.get("@graph", [data]) if isinstance(data, dict) else []
+        for item in items:
+            if isinstance(item, dict) and "JobPosting" in str(item.get("@type", "")):
+                org = item.get("hiringOrganization") or {}
+                loc = item.get("jobLocation") or {}
+                if isinstance(loc, list):
+                    loc = loc[0] if loc else {}
+                addr = (loc.get("address") or {}) if isinstance(loc, dict) else {}
+                place = ", ".join(x for x in (addr.get("addressLocality"), addr.get("addressRegion"), addr.get("addressCountry")) if isinstance(x, str) and x) if isinstance(addr, dict) else str(addr)
+                return {"title": str(item.get("title") or ""), "company": str(org.get("name") or "") if isinstance(org, dict) else str(org),
+                        "location": place, "date_posted": str(item.get("datePosted") or "")[:10], "valid_through": str(item.get("validThrough") or "")[:10],
+                        "description": BeautifulSoup(str(item.get("description") or ""), "html.parser").get_text("\n", strip=True)[:40000]}
+    return None
+
+
+class PostingGone(ValueError):
+    """The posting no longer exists (404/410) or says it is closed."""
 
 
 async def fetch_text(url):
@@ -22,6 +52,8 @@ async def fetch_text(url):
                 if r.is_redirect:
                     url = urljoin(url, r.headers["location"])
                     continue
+                if r.status_code in {404, 410}:
+                    raise PostingGone(f"The posting returns HTTP {r.status_code}: it has been taken down.")
                 r.raise_for_status()
                 content = bytearray()
                 async for chunk in r.aiter_bytes():
@@ -29,10 +61,14 @@ async def fetch_text(url):
                     if len(content) > 4 * 1024 * 1024:
                         raise ValueError("This page is too large. Use the browser preparation flow.")
             soup = BeautifulSoup(bytes(content), "html.parser")
+            posting = job_posting(soup)
             for tag in soup(["script", "style", "nav", "footer", "header"]):
                 tag.decompose()
-            return {"url": url, "title": soup.title.get_text(strip=True) if soup.title else "",
-                    "text": soup.get_text("\n", strip=True)[:40000]}
+            text = soup.get_text("\n", strip=True)[:40000]
+            if posting and len(posting["description"]) > len(text) // 2:
+                head = "\n".join(f"{k.replace('_', ' ').title()}: {v}" for k, v in posting.items() if k != "description" and v)
+                text = (head + "\n\n" + posting["description"])[:40000]
+            return {"url": url, "title": soup.title.get_text(strip=True) if soup.title else "", "text": text, "posting": posting}
         raise ValueError("Too many redirects.")
 
 
@@ -268,7 +304,18 @@ class Workflow:
         self.store.event(jid, "Reading job requirements and checking your profile.")
         if not text:
             self.stage(jid, "Reading posting", "Downloading the job page")
-        page = {"text": text} if text else await fetch_text(job["url"])
+        try:
+            page = {"text": text} if text else await fetch_text(job["url"])
+        except PostingGone as exc:
+            self.store.update(jid, {"posting_status": "closed", "posting_checked_at": now()[:10]}, invalidate=False)
+            raise ValueError(str(exc)) from None
+        posting = page.get("posting") or {}
+        status = "open"
+        from .discover import CLOSED_TEXT
+        if CLOSED_TEXT.search(page["text"][:6000]):
+            status = "closed"
+        elif posting.get("valid_through") and posting["valid_through"] < now()[:10]:
+            status = "expired"
         if jid in self.progress and self.progress[jid]["operation"] == "research":
             self.stage(jid, "Analyzing requirements", "Extracting requirements and checking fit")
         else:
@@ -282,8 +329,14 @@ class Workflow:
                                   {"url": job["url"], "page": page}, stable={"profile": self.store.profile_text()},
                                   fast=True)
         fields = {k: result.get(k, "") for k in ("company", "title", "requisition_id", "location", "deadline", "posting_kind", "summary")}
+        for ours, theirs in (("title", "title"), ("company", "company"), ("location", "location"), ("deadline", "valid_through")):
+            if posting.get(theirs):  # the site's own structured data wins over the model's reading
+                fields[ours] = posting[theirs]
         fields.update({"description": page["text"], "requirements": result.get("requirements", []),
-                       "fit_flags": result.get("fit_flags", []), "fit_acknowledged": False})
+                       "fit_flags": result.get("fit_flags", []), "fit_acknowledged": False,
+                       "posting_status": status, "posting_checked_at": now()[:10], "date_posted": posting.get("date_posted", "")})
+        if status != "open":
+            self.store.event(jid, "This posting looks " + status + ". Check the page before spending time on it.")
         self.store.update(jid, fields)
         company = self.store.link_job_company(jid)
         from .logos import ensure_logo
@@ -305,7 +358,8 @@ class Workflow:
         for c in categories:  # only skills the profile supports
             c["items"] = [i for i in c["items"] if i.lower() in known or any(i.lower() in k or k in i.lower() for k in known)]
         categories = [c for c in categories if c["items"]]
-        edits_ok = validate_edits(resume_source, proposal.get("suggested_edits"))
+        edits_ok = [e for e in validate_edits(resume_source, proposal.get("suggested_edits"))
+                    if not fact_check(e["proposed"], [profile, e["original"], job.get("description") or ""])["blocking"]]
         self.detail(jid, "Compiling the tailored resume PDF (trimming to one page if needed)")
         resume = await build_resume(self.store, jid, [i for c in categories for i in c["items"]] or profiledoc.skills_list(profile),
                                     categories=categories, edits=edits)
@@ -319,6 +373,26 @@ class Workflow:
         return {"resume": resume, "match": match, "selected_skills": selected, "categories": resume.get("categories") or categories,
                 "tailoring_summary": str(proposal.get("tailoring_summary") or "Skills selected for relevance."),
                 "suggested_edits": edits_ok, "accepted_edits": edits or [], "profile_version": meta["version"]}
+
+    def sources(self, profile, job):
+        """Everything a generated text may draw facts from: the profile, the posting, the company research."""
+        import json as _json
+        return [profile, job.get("description") or "", " ".join(job.get("requirements") or []), _json.dumps(self.company_brief(job))]
+
+    async def write_letter(self, jid, model, task, data, profile, job, stable):
+        """Draft a letter, fact-check it, give the model one chance to drop unsupported claims, then decide:
+        a letter with unsupported numbers is never used; unverified names are shown to the reviewer."""
+        found = await model.json(task, data, stable=stable)
+        letter = plain(found.get("letter") or "")
+        result = fact_check(letter, self.sources(profile, job))
+        if result["blocking"] or result["warnings"]:
+            self.detail(jid, "Fact-checking the letter: asking for a rewrite without " + ", ".join((result["blocking"] + result["warnings"])[:5]))
+            found = await model.json(task + "\nThe previous draft contained claims that are not in the profile or posting; remove or replace them: "
+                                     + ", ".join(result["blocking"] + result["warnings"]) + ". Return the full corrected letter.",
+                                     {**data, "previous_draft": letter}, stable=stable)
+            letter = plain(found.get("letter") or letter)
+            result = fact_check(letter, self.sources(profile, job))
+        return letter, result
 
     def company_brief(self, job):
         company = self.store.company_for(job, create=False)
@@ -368,20 +442,26 @@ class Workflow:
         self.stage(jid, "Drafting cover letter", "Drafting" if wants_letter else "No cover letter mentioned; skipping")
         if wants_letter:
             template = next((d for d in self.store.documents() if d["kind"] == "cover_template"), None)
-            found = await model.json("""Draft a cover letter for this job (3-4 short paragraphs, plain text, no placeholders).
+            letter, checked = await self.write_letter(jid, model, """Draft a cover letter for this job (3-4 short paragraphs, plain text, no placeholders).
             Use only facts from the profile; do not invent personal connections or company facts beyond the research given.
             Follow the template's structure and tone when one is given. Return {"letter": "..."}.
-            """ + VOICE,
-                                     {"template": (template or {}).get("text", "")},
-                                     stable={"profile": profile, "job": job["description"], "company": company.get("research") or {}})
-            letter = plain(found.get("letter") or "")
+            """ + VOICE, {"template": (template or {}).get("text", "")}, profile, job,
+                                                      stable={"profile": profile, "job": job["description"], "company": company.get("research") or {}})
             package["letter"] = letter
+            package["letter_check"] = checked
             package["letter_hash"] = hashlib.sha256(letter.encode()).hexdigest()
             package["letter_pdf"] = await build_letter(self.store, jid, letter, profiledoc.identity(profile), letter_date()) if letter else None
         self.stage(jid, "Preparing advice", "Anticipating application questions")
         found = await model.json(QUESTIONS_TASK, {"requirements": job.get("requirements", [])},
                                  stable={"profile": profile, "job": job["description"]}, fast=True)
-        package["likely_questions"] = [q for q in (found.get("questions") or []) if isinstance(q, dict) and q.get("question")][:10]
+        questions = [q for q in (found.get("questions") or []) if isinstance(q, dict) and q.get("question")][:10]
+        for q in questions:
+            checked = fact_check(str(q.get("answer") or ""), self.sources(profile, job))
+            if checked["blocking"] or checked["warnings"]:
+                q["check"] = fact_describe(checked)
+                if checked["blocking"]:
+                    q["confidence"] = "low"
+        package["likely_questions"] = questions
         package.update({"advice_at": now(), "form_ready": False, "unresolved": [], "answers": package.get("answers") or [],
                         "attachments": [], "visual_reviewed": False})
         self.store.update(jid, {"package": package, "status": "advised", "mode": job.get("mode") or "advisor", "error": ""}, invalidate=False)
@@ -437,6 +517,8 @@ class Workflow:
         if len(self.autonomous_today()) >= int(settings["autonomous_daily_cap"]):
             raise ValueError(f"Daily autonomous cap reached ({settings['autonomous_daily_cap']}). Parked until tomorrow.")
         job = self.store.job(jid)
+        if job.get("posting_status") in {"closed", "expired"}:
+            raise ValueError(f"The posting looks {job['posting_status']}. Read the job again before applying.")
         package = dict(job.get("package") or {})
         if package.get("accepted_edits"):  # experience wording is never changed autonomously
             package.update(accepted_edits=[], resume=None)
@@ -543,13 +625,16 @@ class Workflow:
                 template = next((d for d in docs if d["kind"] == "cover_template"), None)
                 if template:
                     self.detail(jid, "Drafting the cover letter")
-                    letter = await model.json("""Draft a cover letter using the supplied template's structure and tone.
+                    letter, checked = await self.write_letter(jid, model, """Draft a cover letter using the supplied template's structure and tone.
                     Use only verified experience; do not invent personal connections or company facts.
                     Return {"letter": "plain text letter"}. No Markdown or LaTeX.
-                    """ + VOICE,
-                                              {"template": template["text"]},
-                                              stable={"profile": profile, "job": job["description"]})
-                    package["letter"] = plain(letter.get("letter", ""))
+                    """ + VOICE, {"template": template["text"]}, profile, job, stable={"profile": profile, "job": job["description"]})
+                    package["letter_check"] = checked
+                    if checked["blocking"]:  # never attach a letter with numbers the profile does not back
+                        package["unresolved"] = ["The drafted cover letter contains claims not in your profile (" + fact_describe(checked) + "). Add the facts to your profile or write the letter yourself, then resume."]
+                        self.store.update(jid, {"package": package, "application_url": page.url})
+                        raise ValueError(package["unresolved"][0])
+                    package["letter"] = letter
                     package["letter_hash"] = hashlib.sha256(package["letter"].encode()).hexdigest()
                     package["letter_pdf"] = await build_letter(self.store, jid, package["letter"], profiledoc.identity(profile), letter_date())
                 else:

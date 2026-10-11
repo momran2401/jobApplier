@@ -46,6 +46,22 @@ The Dashboard's **Questions** panel collects everything the assistant needs from
 - Experience wording suggestions are shown side by side. In AI Applier mode you can tick ones to apply; they are
   applied to that application's copy only. Your master resume source is never modified.
 
+## Fact-check, posting status, new postings
+
+- **Fact-check**: every generated cover letter, likely-question answer, networking draft and wording suggestion
+  is checked in code against your profile, the posting and the company research. A number, date, percentage,
+  email or link that appears in none of them is **blocking**: the model gets one rewrite, and in AI Applier mode
+  a letter that still fails is not attached (the job pauses with the reason). Capitalized names that appear
+  nowhere are listed as warnings for you to check. No model is involved in the check itself.
+- **Posting status**: Read job uses the page's own structured data (schema.org JobPosting) for title, company,
+  location and deadline when the site publishes it, and marks a posting *closed* (404, or "no longer accepting
+  applications") or *expired* (past its stated validThrough). Autonomous mode will not apply to those.
+- **New postings**: the Dashboard's "New postings at companies you track" panel checks the public Greenhouse,
+  Lever and Ashby feeds of companies already on your Companies page, filtered by the keywords in Settings
+  (default: intern, internship, co-op, new grad, early career). No AI tokens, no scraping; **Add** or
+  **Dismiss** each one. In Tracker mode a "How it's going" tile shows applied, replies, interviews, offers,
+  rejections, and how referrals and each mode are doing.
+
 ## Match score
 
 Every tailored resume (Advisor, AI Applier, Autonomous) gets a **Match** tab in the job drawer with two parts:
@@ -132,6 +148,20 @@ Settings → Tracker sheet connects a Google Sheet through a small script you pa
 setup). Every change syncs to the sheet. The sheet is also read: a row marked **Pending referral** holds that
 application, and a status like **Applied** or **Interview** prevents a duplicate submission. Your notes,
 referral details and formulas in the sheet are never overwritten.
+
+## Sync between your Macs
+
+Settings → **Sync between your Macs** keeps the workspace the same on every Mac you use: jobs, companies, the
+networking list, settings, your profile (with history), uploaded documents, built resumes and letters. It works
+through a folder you already keep in sync (iCloud Drive by default; any Dropbox or Syncthing folder works too).
+The live database never goes in that folder: each Mac writes an encrypted snapshot of its records plus
+encrypted copies of the files, and reads the others' snapshots on startup, every minute, and on **Sync now**.
+Changes merge per record, newest wins; a person you remove stays removed on the other Mac.
+
+Setup, on each Mac: save the settings, enter the **same passphrase** (kept in that Mac's Keychain, never in the
+folder), turn sync on. What does not travel: passwords, the Anthropic key, the tracker link (enter them once per
+Mac), Chrome sign-ins, and per-machine usage counters. If both Macs edit the same record while offline, the
+later edit wins and the earlier one is in the Log.
 
 ## What the app never does without you
 

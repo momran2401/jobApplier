@@ -476,3 +476,14 @@ pre.tex { max-height: 320px; }
 .coverage li small { grid-column: 2; color: var(--muted); font: 11.5px var(--mono); }
 .coverage li.ok svg { color: var(--green); }
 .coverage li.miss svg { color: var(--amber); }
+
+/* Found postings & funnel */
+.board.found, .board.funnel { margin-bottom: 28px; }
+.board.found .row { grid-template-columns: 180px minmax(0, 1fr) 70px auto; }
+.board.found .title a { color: inherit; }
+.board.found .title a:hover { text-decoration: underline; }
+.funnel-row { display: flex; flex-wrap: wrap; gap: 28px; padding: 14px 0 4px; }
+.funnel-row div { display: grid; gap: 2px; }
+.funnel-row b { font: 400 28px/1 var(--serif); }
+.funnel-row span { font: 500 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.title .tag { margin-left: 8px; font-size: 10.5px; padding: 1px 7px; }

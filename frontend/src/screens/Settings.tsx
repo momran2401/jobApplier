@@ -4,11 +4,12 @@ import {api, Obj, PanelProps} from '../api';
 import {Button, PageHead, Panel} from '../ui';
 import {Tracker} from './Tracker';
 
-const KEYS = ['default_mode', 'always_letter', 'match_enabled', 'match_github', 'autonomous_daily_cap', 'autonomous_delay_minutes', 'monitor_minutes', 'text_phone', 'text_gateway', 'text_kinds', 'quiet_from', 'quiet_to', 'provider', 'model', 'effort', 'fallback_enabled', 'fallback_model', 'fast_model', 'ollama_context', 'ollama_timeout', 'ollama_url',
+const KEYS = ['default_mode', 'always_letter', 'match_enabled', 'match_github', 'sync_enabled', 'sync_folder', 'sync_minutes', 'discover_keywords', 'autonomous_daily_cap', 'autonomous_delay_minutes', 'monitor_minutes', 'text_phone', 'text_gateway', 'text_kinds', 'quiet_from', 'quiet_to', 'provider', 'model', 'effort', 'fallback_enabled', 'fallback_model', 'fast_model', 'ollama_context', 'ollama_timeout', 'ollama_url',
   'max_model_calls', 'max_output_tokens', 'tex_main', 'skills_start', 'skills_end'];
 
 export function Settings({state, run, busy}: PanelProps) {
-  const [s, setS] = useState<Obj>(state.settings), [key, setKey] = useState(''), [models, setModels] = useState<string[]>([]);
+  const [s, setS] = useState<Obj>(state.settings), [key, setKey] = useState(''), [models, setModels] = useState<string[]>([]), [pass, setPass] = useState('');
+  const sync: Obj = state.sync || {};
   const [fallbackModels, setFallbackModels] = useState<string[]>([]), [fallbackChecked, setFallbackChecked] = useState(false);
   const save = () => api('/settings', 'PUT', Object.fromEntries(KEYS.map(k => [k, s[k]])));
   const set = (k: string, v: any) => setS({...s, [k]: v});
@@ -22,6 +23,7 @@ export function Settings({state, run, busy}: PanelProps) {
         <label className="field">Autonomous: max submissions per day<input type="number" min={1} max={50} value={s.autonomous_daily_cap} onChange={e => set('autonomous_daily_cap', Number(e.target.value))}/></label>
         <label className="field">Autonomous: wait before submitting (minutes)<input type="number" min={0} max={120} value={s.autonomous_delay_minutes} onChange={e => set('autonomous_delay_minutes', Number(e.target.value))}/></label>
         <label className="check" style={{alignSelf: 'end'}}><input type="checkbox" checked={!!s.always_letter} onChange={e => set('always_letter', e.target.checked)}/>Always draft a cover letter, even if the posting doesn’t mention one</label>
+        <label className="field full">New-posting keywords (job boards of companies you track; comma-separated, empty = everything)<input value={s.discover_keywords || ''} onChange={e => set('discover_keywords', e.target.value)}/></label>
         <label className="check"><input type="checkbox" checked={!!s.match_enabled} onChange={e => set('match_enabled', e.target.checked)}/>Score each tailored resume (HackerRank's open-source rubric + requirement coverage; one extra AI call)</label>
         <label className="check"><input type="checkbox" checked={!!s.match_github} onChange={e => set('match_github', e.target.checked)}/>Include public GitHub signals from the GitHub link in your profile</label>
       </div>
@@ -38,6 +40,24 @@ export function Settings({state, run, busy}: PanelProps) {
           <label key={k} className={'link-chip' + ((s.text_kinds || []).includes(k) ? ' on' : '')}><input type="checkbox" style={{display: 'none'}} checked={(s.text_kinds || []).includes(k)} onChange={e => set('text_kinds', e.target.checked ? [...(s.text_kinds || []), k] : (s.text_kinds || []).filter((x: string) => x !== k))}/>{t}</label>)}</div></div>
       </div>
       <p className="small muted">Requires the tracker sheet's script to be updated to the latest version (Settings → Tracker sheet → Copy script, paste over the old one, Deploy → Manage deployments → Edit → New version) and authorized once for Gmail.</p>
+    </Panel>
+    <Panel title="Sync between your Macs" sub="Keeps jobs, companies, people, settings, your profile and documents the same on every Mac you run JobApplier on, through a folder you already sync (iCloud Drive by default). Everything written there is encrypted with a passphrase that stays in each Mac’s Keychain."
+      action={sync.enabled ? <span className={'badge ' + (sync.error ? 's-needs_attention' : 's-submitted')}><i/>{sync.error ? 'Needs attention' : sync.last_push ? 'Syncing' : 'On'}</span> : <span className="badge s-new"><i/>Off</span>}>
+      <label className="check"><input type="checkbox" checked={!!s.sync_enabled} onChange={e => set('sync_enabled', e.target.checked)}/>Sync this workspace with my other Macs</label>
+      <div className="form-grid">
+        <label className="field full">Sync folder<input value={s.sync_folder} placeholder={sync.folder} onChange={e => set('sync_folder', e.target.value)}/></label>
+        <label className="field">Check every<select value={s.sync_minutes} onChange={e => set('sync_minutes', Number(e.target.value))}>{[1, 2, 5, 15].map(n => <option key={n} value={n}>{n} minute{n > 1 ? 's' : ''}</option>)}</select></label>
+        <label className="field"><span><KeyRound size={13}/> Sync passphrase {state.capabilities.sync_passphrase && <b className="ok-text">· Stored</b>}</span>
+          <div className="inline-form"><input type="password" autoComplete="new-password" value={pass} onChange={e => setPass(e.target.value)} placeholder="Same passphrase on every Mac"/>
+            <Button disabled={!pass || !!busy} onClick={() => run('sync-pass', async () => {await api('/secrets', 'POST', {name: 'sync_passphrase', value: pass}); setPass('');}, 'Passphrase saved in Keychain.')}>Save</Button></div></label>
+      </div>
+      <div className="row-actions">
+        <Button disabled={!!busy || !sync.enabled || !state.capabilities.sync_passphrase} onClick={() => run('sync', async () => {const r = await api('/sync/now', 'POST'); return r;}, 'Synced.')}><RefreshCw size={14}/>Sync now</Button>
+        <span className="small muted">This Mac: {sync.machine?.name}{sync.last_push ? ` · last push ${new Date(sync.last_push).toLocaleTimeString()}` : ''}{sync.last_pull ? ` · last pull ${new Date(sync.last_pull).toLocaleTimeString()}` : ''}
+          {sync.peers?.length ? ` · other Macs: ${sync.peers.map((p: Obj) => p.name).join(', ')}` : sync.enabled ? ' · no other Mac has written yet' : ''}</span>
+      </div>
+      {sync.error && <div className="hint warn">{sync.error}</div>}
+      <p className="small muted">Passwords, API keys and the tracker link never leave this Mac’s Keychain: enter them once on each Mac. Chrome sign-ins are per Mac too. Save settings, then set the passphrase, then turn it on here and on the other Mac.</p>
     </Panel>
     <Panel title="AI connection" sub="Claude receives the relevant profile and page content. Ollama stays on this Mac.">
       <div className="form-grid">

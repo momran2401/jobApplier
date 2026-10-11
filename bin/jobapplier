@@ -28,7 +28,7 @@ running() { curl -fsS -m 1 -o /dev/null "$URL/api/bootstrap"; }
 if [[ "${1:-}" == "stop" ]]; then
   pids=$(lsof -t -iTCP:8765 -sTCP:LISTEN 2>/dev/null || true)
   if [[ -n "$pids" ]]; then
-    kill $pids
+    kill ${=pids}
     echo "JobApplier stopped."
   else
     echo "JobApplier is not running."
@@ -42,10 +42,16 @@ if running; then
   exit 0
 fi
 
-PYTHON="$(command -v python3 || true)"
-[[ -n "$PYTHON" ]] || die "Python 3.11 or later is required. Install it from https://www.python.org/downloads/."
-"$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' || \
-  die "Python 3.11 or later is required (found $($PYTHON --version))."
+PYTHON=""
+for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
+  found="$(command -v "$candidate" 2>/dev/null || true)"
+  [[ -n "$found" ]] || continue
+  if "$found" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+    PYTHON="$found"
+    break
+  fi
+done
+[[ -n "$PYTHON" ]] || die "Python 3.11 or later is required (found $(python3 --version 2>/dev/null || echo none)). Install it from https://www.python.org/downloads/."
 
 node_is_supported() {
   local version major
@@ -115,6 +121,10 @@ if dashboard_needs_build; then
   echo "Building the dashboard..."
   (cd frontend && "$NPM" ci --no-audit --no-fund && "$NPM" run build)
 fi
+
+[[ -d "/Applications/Google Chrome.app" ]] || echo "Note: Google Chrome is not installed. The applier and LinkedIn reading use Chrome; install it from https://www.google.com/chrome/ ."
+command -v tectonic >/dev/null 2>&1 || command -v pdflatex >/dev/null 2>&1 || echo "Note: no LaTeX compiler found (brew install tectonic). Resumes are used as uploaded until one is installed."
+command -v codex >/dev/null 2>&1 || echo "Note: Codex CLI not found (brew install codex, then codex login). Choose another provider in Settings otherwise."
 
 echo "JobApplier: $URL  (Control-C stops it; \`jobapplier stop\` from another terminal also works)"
 ( for i in {1..40}; do running && { open "$URL"; break; }; sleep 0.5; done ) &

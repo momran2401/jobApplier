@@ -917,3 +917,123 @@ async def test_match_report_reuses_scores_and_survives_failures(store, tmp_path,
 def test_plain_voice_strips_em_dashes_between_words():
     from jobapplier.workflow import plain
     assert plain("We shipped it — fast — and it worked. 2019–2021 at CERN – really.") == "We shipped it, fast, and it worked. 2019–2021 at CERN, really."
+
+
+def test_sync_merges_two_workspaces_through_a_shared_folder(tmp_path, monkeypatch):
+    from jobapplier.sync import Sync, decrypt, derive_key
+    folder = tmp_path / "icloud"
+    a, b = Store(tmp_path / "a"), Store(tmp_path / "b")
+    for st in (a, b):
+        st.set("settings", {**st.settings(), "sync_enabled": True, "sync_folder": str(folder)})
+    sa, sb = Sync(a, lambda: "pass phrase"), Sync(b, lambda: "pass phrase")
+    (a.root / "documents" / "d1").mkdir(parents=True)
+    (a.root / "documents" / "d1" / "resume.pdf").write_bytes(b"%PDF-1.4 fake")
+    job, _ = a.add_job("https://jobs.example.com/1")
+    a.update(job["id"], {"title": "Firmware Intern", "status": "applied"}, invalidate=False)
+    a.save_profile_text("## Identity\n- First name: Mustafa\n", reason="edited")
+    from jobapplier.networking import Networking
+    pa = Networking(a, None, None).add_person("Ana Lopez", "https://www.linkedin.com/in/ana-lopez")[0]
+    assert sa.push() is True and sa.push() is False  # unchanged state is not rewritten
+    enc = next(folder.glob("*.json.enc")).read_bytes()
+    assert b"Firmware Intern" not in enc and b"linkedin" not in enc  # ciphertext only
+    with pytest.raises(ValueError, match="passphrase"):
+        decrypt(derive_key("wrong", (folder / "salt").read_bytes()), enc)
+    assert sb.pull() == [sa.machine()["name"]]
+    assert b.job(job["id"])["title"] == "Firmware Intern" and b.profile_text().startswith("## Identity")
+    assert (b.root / "documents" / "d1" / "resume.pdf").read_bytes() == b"%PDF-1.4 fake"
+    assert b.person(pa["id"])["name"] == "Ana Lopez" and b.get("person_seq") == 1
+    # Newest edit wins per record, in either direction; a delete travels as a tombstone.
+    b.update(job["id"], {"review_notes": "from B"}, invalidate=False)
+    b.delete_person(pa["id"])
+    assert sb.push() and sa.pull() == [sb.machine()["name"]]
+    assert a.job(job["id"])["review_notes"] == "from B" and a.people() == []
+    a.update(job["id"], {"review_notes": "from A later"}, invalidate=False)
+    sa.push()
+    sb.pull()
+    assert b.job(job["id"])["review_notes"] == "from A later"
+    # Same ID handed to different people while apart: the local one moves, the remote one lands.
+    na, nb = Networking(a, None, None), Networking(b, None, None)
+    pa2 = na.add_person("Bo Chen", "https://www.linkedin.com/in/bo-chen")[0]
+    pb2 = nb.add_person("Cy Park", "https://www.linkedin.com/in/cy-park")[0]
+    assert pa2["id"] == pb2["id"]
+    sa.push()
+    sb.pull()
+    names = {p["profile_url"]: p["id"] for p in b.people()}
+    assert names["https://www.linkedin.com/in/bo-chen"] == pa2["id"] and names["https://www.linkedin.com/in/cy-park"] != pb2["id"]
+    assert "Synced" in b.events()[0]["message"]
+
+
+def test_fact_check_blocks_unsupported_numbers_and_flags_names():
+    from jobapplier.factcheck import check, describe
+    sources = ["## Experience\n- Built a LiDAR rig used by 20 engineers at Texas A&M, 2025. Python, C++, STM32.",
+               "Anduril seeks EE interns for a 12-week in-person Summer 2027 internship."]
+    ok = check("At Texas A&M I built a LiDAR rig used by 20 engineers in Python. I'd like to join the 12-week Summer 2027 program.", sources)
+    assert ok == {"blocking": [], "warnings": []}
+    bad = check("I cut setup time 40% and led a team of 5 at Lockheed Martin using Rust, saving $30k.", sources)
+    assert bad["blocking"] == ["40%", "$30k"] and bad["warnings"] == ["Lockheed Martin", "Rust"]
+    assert "40%" in describe(bad) and "Lockheed" in describe(bad)
+    assert check("Reach me at me@example.com", ["Email: me@example.com"])["blocking"] == []
+    assert check("Reach me at other@example.com", ["Email: me@example.com"])["blocking"] == ["other@example.com"]
+
+
+def test_job_posting_json_ld_and_closed_detection():
+    from bs4 import BeautifulSoup
+
+    from jobapplier.discover import CLOSED_TEXT
+    from jobapplier.workflow import job_posting
+    html = """<html><head><script type="application/ld+json">{"@context":"https://schema.org","@type":"JobPosting","title":"EE Intern",
+      "hiringOrganization":{"@type":"Organization","name":"Acme"},"datePosted":"2026-09-01","validThrough":"2026-12-31T00:00",
+      "jobLocation":{"@type":"Place","address":{"addressLocality":"Austin","addressRegion":"TX"}},
+      "description":"<p>Build <b>firmware</b>.</p><ul><li>C++</li></ul>"}</script></head><body>JS app</body></html>"""
+    p = job_posting(BeautifulSoup(html, "html.parser"))
+    assert p["title"] == "EE Intern" and p["company"] == "Acme" and p["location"] == "Austin, TX" and p["valid_through"] == "2026-12-31"
+    assert "firmware" in p["description"] and "C++" in p["description"]
+    assert job_posting(BeautifulSoup("<html><body>plain</body></html>", "html.parser")) is None
+    assert CLOSED_TEXT.search("Sorry, this job is no longer available.") and not CLOSED_TEXT.search("Apply now")
+
+
+@pytest.mark.asyncio
+async def test_research_uses_structured_posting_and_marks_expired(store, monkeypatch):
+    from jobapplier import ai
+    from jobapplier import workflow as module
+    job, _ = store.add_job("https://boards.greenhouse.io/acme/jobs/1")
+
+    async def fake_fetch(url):
+        return {"url": url, "title": "x", "text": "Title: EE Intern\n\nBuild firmware. No longer accepting applications.",
+                "posting": {"title": "EE Intern", "company": "Acme", "location": "Austin, TX", "date_posted": "2026-01-01", "valid_through": "2026-02-01", "description": "Build firmware."}}
+    monkeypatch.setattr(module, "fetch_text", fake_fetch)
+
+    async def fake_json(self, task, data, stable=None, local_ok=True, fast=False):
+        return {"company": "ACME Corp (guess)", "title": "Intern", "requirements": ["C++"], "fit_flags": [], "summary": "s"}
+    monkeypatch.setattr(ai.Model, "json", fake_json)
+    monkeypatch.setattr(module, "ensure_logo", AsyncMock(), raising=False)
+    wf = Workflow(store, type("B", (), {"lock": asyncio.Lock()})(), None)
+    await wf.research(job["id"])
+    j = store.job(job["id"])
+    assert j["title"] == "EE Intern" and j["company"] == "Acme" and j["location"] == "Austin, TX" and j["deadline"] == "2026-02-01"
+    assert j["posting_status"] == "closed"  # the closed-text wins over the model's reading
+    with pytest.raises(ValueError, match="closed"):
+        await wf.autonomous(job["id"])
+
+
+@pytest.mark.asyncio
+async def test_discover_finds_new_postings_from_tracked_boards(store, monkeypatch):
+    from jobapplier import discover
+    job, _ = store.add_job("https://job-boards.greenhouse.io/acme/jobs/1")
+    store.update(job["id"], {"company": "Acme"}, invalidate=False)
+    store.link_job_company(job["id"])
+    other, _ = store.add_job("https://careers.example.com/x")
+    store.link_job_company(other["id"])
+
+    async def fake_feed(client, portal, slug):
+        assert (portal, slug) == ("greenhouse", "acme")
+        return [{"url": "https://job-boards.greenhouse.io/acme/jobs/1?x=1", "title": "Known", "location": "", "posted_at": ""},
+                {"url": "https://job-boards.greenhouse.io/acme/jobs/2", "title": "Firmware Intern", "location": "Austin", "posted_at": ""},
+                {"url": "https://job-boards.greenhouse.io/acme/jobs/3", "title": "Staff Accountant", "location": "", "posted_at": ""}]
+    monkeypatch.setattr(discover, "fetch_feed", fake_feed)
+    monkeypatch.setattr(discover.asyncio, "sleep", AsyncMock())
+    r = await discover.find_new(store)
+    assert r == {"checked": 1, "new": 1, "errors": []}
+    found = store.get("discovered")
+    assert list(found) == ["https://job-boards.greenhouse.io/acme/jobs/2"] and found[list(found)[0]]["company"] == "Acme"
+    assert (await discover.find_new(store))["new"] == 0  # already listed
