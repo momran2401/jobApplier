@@ -55,6 +55,7 @@ class JobLog(BaseModel):
     notes: str = ""
     title: str = ""
     company: str = ""
+    force: bool = False  # "Log anyway": the link matched a job you have, but it is a different job
 
 
 class JobEdit(BaseModel):
@@ -179,11 +180,13 @@ def create_app(data_dir=None):
     @app.post("/api/jobs/log")
     async def log_job(body: JobLog):
         """Tracker mode: record an application you submitted yourself, or store a job to apply to later."""
-        job, created = store.add_job(body.url)
-        if not created and job["status"] in {"submitted", "applied"}:
-            raise ValueError("This job is already recorded as applied.")
-        if not created and body.stage == "saved" and job["status"] == "saved":
-            raise ValueError("This job is already saved.")
+        job, created = store.add_job(body.url, exact=body.force)
+        if not created:
+            what = f"{job.get('company') or 'a job'} · {job.get('title') or 'untitled'}, added {job['created_at'][:10]}"
+            if body.force:
+                raise ValueError(f"This exact link is already in your list ({what}). Open that one instead.")
+            raise ValueError(f"DUPLICATE: This link matches one you already have: {what}. If that's the same job, open it there "
+                             "(Mark as applied lives in its drawer). If it's a different job, use Log anyway.")
         applied_at = body.applied_at.strip() or now()[:10]
         stage = {"status": "applied", "submitted_at": applied_at, "confirmation": "Applied myself"} if body.stage == "applied" \
             else {"status": "saved", "submitted_at": None, "confirmation": ""}
@@ -245,6 +248,23 @@ def create_app(data_dir=None):
         result = store.update(jid, fields, expected_revision=body.revision)
         store.event(jid, "Application details updated; any previous approval was cleared.")
         return result
+
+    @app.delete("/api/jobs/{jid}")
+    async def delete_job(jid: str):
+        """Delete a job you added by mistake or for testing. Removed on your other Macs too; its row in the tracker
+        sheet stays until you delete it there."""
+        job = store.job(jid)
+        task = workflow.tasks.get(jid)
+        if (task and not task.done()) or job["status"] in {"preparing", "submitting"}:
+            raise ValueError("Stop or pause this job before deleting it.")
+        page = browser.pages.pop(jid, None)
+        if page:
+            await page.close()
+        browser.reviews.pop(jid, None)
+        store.delete_job(jid)
+        shutil.rmtree(store.root / "artifacts" / jid, ignore_errors=True)
+        store.event(None, f"Deleted {job.get('company') or 'a job'} · {job.get('title') or job['url']}.")
+        return {"deleted": jid}
 
     @app.post("/api/jobs/{jid}/research")
     async def research(jid: str):

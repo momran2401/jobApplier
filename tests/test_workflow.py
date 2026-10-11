@@ -1037,3 +1037,80 @@ async def test_discover_finds_new_postings_from_tracked_boards(store, monkeypatc
     found = store.get("discovered")
     assert list(found) == ["https://job-boards.greenhouse.io/acme/jobs/2"] and found[list(found)[0]]["company"] == "Acme"
     assert (await discover.find_new(store))["new"] == 0  # already listed
+
+
+def test_sync_folds_the_same_company_created_on_both_macs_and_backs_up_first(tmp_path):
+    from jobapplier.sync import Sync
+    folder = tmp_path / "icloud"
+    a, b = Store(tmp_path / "a"), Store(tmp_path / "b")
+    for st in (a, b):
+        st.set("settings", {**st.settings(), "sync_enabled": True, "sync_folder": str(folder)})
+    sa, sb = Sync(a, lambda: "pw"), Sync(b, lambda: "pw")
+    ja, _ = a.add_job("https://job-boards.greenhouse.io/andurilindustries/jobs/1")
+    a.update(ja["id"], {"company": "Anduril Industries"}, invalidate=False)
+    ca = a.link_job_company(ja["id"])
+    a.save_company({**a.company(ca["id"]), "domain": "anduril.com"})
+    jb, _ = b.add_job("https://job-boards.greenhouse.io/andurilindustries/jobs/2")
+    b.update(jb["id"], {"company": "Anduril"}, invalidate=False)
+    cb = b.link_job_company(jb["id"])
+    assert ca["id"] != cb["id"]
+    sa.push()
+    assert sb.pull()
+    companies = b.companies()
+    assert len(companies) == 1 and companies[0]["id"] == cb["id"] and companies[0]["domain"] == "anduril.com"  # folded, not duplicated
+    assert b.job(ja["id"])["company_id"] == cb["id"]  # the remote job points at our company
+    assert list((b.root / "backups").glob("*before-first-sync-*/workspace.sqlite"))
+    sa.push()
+    a.save_company({**a.company(ca["id"]), "notes": "later"})
+    sa.push()
+    sb.pull()
+    assert len(b.companies()) == 1 and len(list((b.root / "backups").iterdir())) == 1  # one backup per new Mac
+
+
+def test_route_fragments_and_exact_links_keep_different_jobs_apart(store):
+    a, _ = store.add_job("https://careers.example.com/#/job/101?utm_source=x")
+    b, created = store.add_job("https://careers.example.com/#/job/202")
+    assert created and a["id"] != b["id"]  # single-page sites put the job ID after #
+    assert store.add_job("https://careers.example.com/#top")[0]["url"] == "https://careers.example.com"  # plain anchors still ignored
+    c, _ = store.add_job("https://jobs.example.com/view?id=7&team=radar")
+    same, created = store.add_job("https://jobs.example.com/view?id=7&team=sonar")
+    assert not created and same["id"] == c["id"]
+    other, created = store.add_job("https://jobs.example.com/view?id=7&team=sonar", exact=True)
+    assert created and other["id"] != c["id"]  # "Log anyway" keeps every parameter
+
+
+def test_log_anyway_and_delete_job(tmp_path):
+    with patch("jobapplier.app.secret", return_value=None), TestClient(create_app(tmp_path)) as client:
+        h = {"x-workspace-token": client.get("/api/bootstrap").json()["token"]}
+        wf = client.app.state.workflow
+        wf.run = AsyncMock()
+        body = {"url": "https://jobs.example.com/view?id=7&team=radar", "title": "Radar Intern", "company": "Acme"}
+        first = client.post("/api/jobs/log", headers=h, json=body).json()
+        dupe = client.post("/api/jobs/log", headers=h, json={**body, "url": "https://jobs.example.com/view?id=7&team=sonar", "title": "Sonar Intern"})
+        assert dupe.status_code == 400 and dupe.json()["detail"].startswith("DUPLICATE:") and "Radar Intern" in dupe.json()["detail"]
+        second = client.post("/api/jobs/log", headers=h, json={**body, "url": "https://jobs.example.com/view?id=7&team=sonar", "title": "Sonar Intern", "force": True}).json()
+        assert second["id"] != first["id"] and second["title"] == "Sonar Intern"
+        assert client.delete(f"/api/jobs/{first['id']}", headers=h).json() == {"deleted": first["id"]}
+        store = client.app.state.store
+        assert [j["id"] for j in store.jobs()] == [second["id"]] and first["id"] in store.get("tombstones")
+        assert client.delete(f"/api/jobs/{first['id']}", headers=h).status_code == 404
+
+
+def test_sync_carries_job_deletions(tmp_path):
+    from jobapplier.sync import Sync
+    folder = tmp_path / "icloud"
+    a, b = Store(tmp_path / "a"), Store(tmp_path / "b")
+    for st in (a, b):
+        st.set("settings", {**st.settings(), "sync_enabled": True, "sync_folder": str(folder)})
+    sa, sb = Sync(a, lambda: "pw"), Sync(b, lambda: "pw")
+    job, _ = a.add_job("https://jobs.example.com/1")
+    sa.push()
+    sb.pull()
+    assert b.job(job["id"])
+    b.delete_job(job["id"])
+    sb.push()
+    sa.pull()
+    assert a.jobs() == []
+    sa.push()
+    sb.pull()
+    assert b.jobs() == []  # does not come back

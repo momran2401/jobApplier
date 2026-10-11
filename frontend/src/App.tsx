@@ -253,7 +253,8 @@ export default function App() {
             const r = await api('/jobs', 'POST', {urls: links.split(/\s+/).filter(Boolean), mode: importMode || s.default_mode});
             if (r.errors.length) throw new Error(`${r.imported.length} added. ${r.errors.map((e: Obj) => e.error).join(' ')}`);
             setLinks(''); setImportOpen(false);
-          }, 'Jobs added.')}><Plus size={15}/>Add</Button></div></div>
+            setNotice(`${r.imported.length} added.${r.duplicates.length ? ` ${r.duplicates.length} already in your list, skipped.` : ''}`);
+          })}><Plus size={15}/>Add</Button></div></div>
     </div></div>}
     {logOpen && <LogJob close={() => setLogOpen(false)} run={run} busy={busy}/>}
     {active && <JobDetail job={active} state={state} close={() => setDetail(null)} run={run} busy={busy} goProfile={() => {setDetail(null); setScreen('profile');}}/>}

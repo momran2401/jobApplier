@@ -21,13 +21,17 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def canonical_url(url):
+def canonical_url(url, exact=False):
+    """The identity of a job link, used to catch the same posting added twice. Tracking parameters are dropped.
+    A fragment that looks like a route (#/job/123, #!/req=55) is kept, because single-page career sites put the
+    job ID there. `exact` keeps every parameter: used when you say a link really is a different job."""
     p = urlsplit(url.strip().replace("\\&", "&").replace("\\_", "_"))
     if p.scheme not in ("http", "https") or not p.hostname or p.username or p.password:
         raise ValueError("Use a public HTTP or HTTPS job link.")
-    pairs = [(k, v) for k, v in parse_qsl(p.query) if not k.startswith("utm_")
-             and k not in {"gh_src", "source", "ref", "category", "jex", "target_level", "team"}]
-    return urlunsplit((p.scheme, p.netloc.lower(), p.path.rstrip("/"), urlencode(sorted(pairs)), ""))
+    pairs = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=exact)
+             if exact or (not k.startswith("utm_") and k not in {"gh_src", "source", "ref", "category", "jex", "target_level", "team"})]
+    fragment = p.fragment if exact or re.search(r"[/=]|\d", p.fragment) else ""
+    return urlunsplit((p.scheme, p.netloc.lower(), p.path.rstrip("/"), urlencode(sorted(pairs)), fragment))
 
 
 DEFAULT_SETTINGS = {
@@ -313,8 +317,8 @@ class Store:
             raise KeyError("Application not found")
         return json.loads(row[0])
 
-    def add_job(self, url):
-        url = canonical_url(url)
+    def add_job(self, url, exact=False):
+        url = canonical_url(url, exact=exact)
         with self.connection() as c:
             old = c.execute("SELECT data FROM jobs WHERE url=?", (url,)).fetchone()
             if old:
@@ -353,6 +357,14 @@ class Store:
                 job["sync_status"] = "pending"
             c.execute("UPDATE jobs SET revision=?,data=? WHERE id=?", (job["revision"], json.dumps(job), jid))
         return job
+
+    def delete_job(self, jid, tombstone=True):
+        """Remove a job and its log lines. A tombstone makes the deletion reach your other Macs."""
+        with self.connection() as c:
+            c.execute("DELETE FROM jobs WHERE id=?", (jid,))
+            c.execute("DELETE FROM events WHERE job_id=?", (jid,))
+        if tombstone:
+            self.set("tombstones", {**self.get("tombstones", {}), jid: now()})
 
     def event(self, jid, message):
         with self.connection() as c:

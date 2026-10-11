@@ -23,7 +23,7 @@ die() {
   exit 1
 }
 
-running() { curl -fsS -m 1 -o /dev/null "$URL/api/bootstrap"; }
+running() { curl -fsS -m 1 -o /dev/null "$URL/api/bootstrap" 2>/dev/null; }
 
 if [[ "${1:-}" == "stop" ]]; then
   pids=$(lsof -t -iTCP:8765 -sTCP:LISTEN 2>/dev/null || true)

@@ -1,5 +1,5 @@
 import {useState} from 'react';
-import {ArrowRight, Check, CheckCheck, CircleAlert, Copy, ExternalLink, Lightbulb, Pause, Play, Search, Users, X} from 'lucide-react';
+import {ArrowRight, Check, CheckCheck, CircleAlert, Copy, ExternalLink, Lightbulb, Pause, Play, Search, Trash2, Users, X} from 'lucide-react';
 import {api, Obj, PanelProps} from '../api';
 import {Badge, Button, Empty, Logo, Progress, SavedInput} from '../ui';
 
@@ -128,7 +128,9 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
           : <Empty title="No activity yet">Preparation and submission events are recorded here.</Empty>)}
       </div>
 
-      <footer className="drawer-foot"><span className="small muted">{job.sync_status === 'synced' ? 'Synced to your tracker' : job.sync_status === 'error' ? 'Tracker sync needs attention' : 'Saved locally'}</span>
+      <footer className="drawer-foot"><span className="small muted">{!locked && <button className="text-link danger-link" disabled={!!busy} title="Delete this job from JobApplier (and your other Macs). Its tracker sheet row stays."
+          onClick={() => {if (confirm(`Delete ${job.company || 'this job'} · ${job.title || job.url}? This can't be undone. Its row in the tracker sheet stays.`)) run('delete', async () => {await api(`/jobs/${job.id}`, 'DELETE'); close();}, 'Job deleted.');}}><Trash2 size={13}/>Delete</button>}
+        {' '}{job.sync_status === 'synced' ? 'Synced to your tracker' : job.sync_status === 'error' ? 'Tracker sync needs attention' : 'Saved locally'}</span>
         <div className="row-actions">{locked ? <Button onClick={() => run('pause', () => api(`/jobs/${job.id}/pause`, 'POST'))} disabled={job.status === 'submitting'}><Pause size={14}/>Pause</Button>
           : !['submitted', 'uncertain', 'applied'].includes(job.status) && <>
             {job.status === 'saved' && <Button primary disabled={!!busy} onClick={() => run('applied', () => api(`/jobs/${job.id}/applied`, 'POST'), 'Marked as applied.')}><Check size={15}/>Mark as applied</Button>}

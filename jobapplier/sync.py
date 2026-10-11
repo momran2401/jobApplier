@@ -18,13 +18,13 @@ from pathlib import Path
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .store import now
+from .store import normalize_company, now
 
 MAGIC = b"JAS1"
 FORMAT = 1
 DEFAULT_FOLDER = "~/Library/Mobile Documents/com~apple~CloudDocs/JobApplier Sync"
 # kv keys that describe this machine only, or that the sync itself maintains.
-LOCAL_KV = {"last_inference", "usage", "sync_state", "tombstones", "kv_times", "profile_meta"}  # profile_meta travels with the profile text
+LOCAL_KV = {"last_inference", "usage", "sync_state", "tombstones", "kv_times", "profile_meta", "company_map"}  # profile_meta travels with the profile text
 FILE_DIRS = ("documents", "artifacts", "logos")
 MAX_FILE = 25 * 1024 * 1024
 
@@ -172,12 +172,49 @@ class Sync:
             snap = json.loads(decrypt(key, path.read_bytes()))
             if snap.get("format") != FORMAT:
                 raise ValueError(f"Snapshot from {mid} uses sync format {snap.get('format')}; update JobApplier on both Macs.")
+            if mid not in peers:
+                self.backup(f"before-first-sync-{mid}")
             self.apply(snap, key)
             peers[mid] = {"name": snap["machine"]["name"], "written_at": snap["written_at"], "file_mtime": path.stat().st_mtime}
             applied.append(snap["machine"]["name"])
         if applied:
             self.store.set("sync_state", {**self.store.get("sync_state", {}), "peers": peers, "last_pull": now()})
         return applied
+
+    def backup(self, label):
+        """A consistent copy of the database and profile, taken before the first merge with a new Mac."""
+        import sqlite3
+        out = self.store.root / "backups" / f"{now()[:19].replace(':', '')}-{label}"
+        out.mkdir(parents=True, exist_ok=True)
+        src, dst = sqlite3.connect(self.store.path), sqlite3.connect(out / "workspace.sqlite")
+        with dst:
+            src.backup(dst)
+        src.close()
+        dst.close()
+        if self.store.profile_path.is_file():
+            shutil.copy2(self.store.profile_path, out / "profile.md")
+        self.store.event(None, f"Backed up the workspace to data/backups/{out.name} before the first sync with another Mac.")
+        return out
+
+    def match_companies(self, remote_companies):
+        """Both Macs may have created the same employer separately, under different IDs. A remote company that
+        is not known by ID is matched to a local one by name keys (the same rule jobs use to find their company)
+        and remembered in kv `company_map`, so it is merged instead of duplicated. Returns {remote_id: local_id}."""
+        mapping = dict(self.store.get("company_map", {}))
+        local = self.store.companies()
+        ids = {c["id"] for c in local}
+        for company in remote_companies:
+            if company["id"] in ids or company["id"] in mapping:
+                continue
+            keys = set(company.get("keys") or []) | {normalize_company(company.get("name"))}
+            keys.discard("")
+            for mine in local:
+                known = set(mine.get("keys") or []) | {normalize_company(mine.get("name"))}
+                if any(k == x or (len(k) >= 4 and len(x) >= 4 and (k.startswith(x) or x.startswith(k))) for k in keys for x in known if x):
+                    mapping[company["id"]] = mine["id"]
+                    break
+        self.store.set("company_map", mapping)
+        return mapping
 
     # ---- merge ----
     def apply(self, snap, key):
@@ -195,9 +232,41 @@ class Sync:
             if blob.is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 write_atomic(target, decrypt(key, blob.read_bytes()))
+        mapping = self.match_companies(snap.get("companies", []))
+        local_companies = {c["id"]: c for c in store.companies()}
+        for company in snap.get("companies", []):
+            if company["id"] in mapping:  # same employer under another ID: fold what is new into ours
+                mine = local_companies[mapping[company["id"]]]
+                merged = {**mine, "keys": sorted(set(mine.get("keys") or []) | set(company.get("keys") or [])),
+                          "aliases": sorted((set(mine.get("aliases") or []) | set(company.get("aliases") or []) | {company["name"]}) - {mine["name"]})}
+                for field in ("domain", "research", "logo", "account_email", "portal_url", "notes"):
+                    if not mine.get(field) and company.get(field):
+                        merged[field] = company[field]
+                if mine.get("signin_method", "unknown") == "unknown" and company.get("signin_method", "unknown") != "unknown":
+                    merged.update(signin_method=company["signin_method"], google_signin=company.get("google_signin", False), has_account=company.get("has_account", False))
+                asked = {q["question"].strip().lower() for q in mine.get("questions") or []}
+                merged["questions"] = (mine.get("questions") or []) + [q for q in company.get("questions") or [] if q["question"].strip().lower() not in asked]
+                if merged != mine:
+                    store.save_company({**merged, "updated_at": max(mine.get("updated_at", ""), company.get("updated_at", ""))})
+                    changed += 1
+                continue
+            mine = local_companies.get(company["id"])
+            if mine is None or company.get("updated_at", "") > mine.get("updated_at", ""):
+                store.save_company({**company, "updated_at": company.get("updated_at", now())})
+                changed += 1
+        tombstones = {**store.get("tombstones", {}), **snap.get("tombstones", {})}
         local_jobs = {j["id"]: j for j in store.jobs()}
         by_url = {j["url"]: j["id"] for j in local_jobs.values()}
+        for jid, ts in tombstones.items():  # jobs deleted on another Mac after our last edit
+            if jid in local_jobs and ts > local_jobs[jid].get("updated_at", ""):
+                store.delete_job(jid, tombstone=False)
+                local_jobs.pop(jid)
+                changed += 1
         for job in snap.get("jobs", []):
+            if tombstones.get(job["id"], "") > job.get("updated_at", ""):
+                continue
+            if job.get("company_id") in mapping:
+                job = {**job, "company_id": mapping[job["company_id"]]}
             mine = local_jobs.get(job["id"])
             if mine is None and job["url"] in by_url:
                 continue  # the same link was added on both Macs; the local record stays
@@ -205,18 +274,13 @@ class Sync:
                 job["revision"] = max(job.get("revision", 1), (mine or {}).get("revision", 0)) + 1
                 store.put_job(job)
                 changed += 1
-        local_companies = {c["id"]: c for c in store.companies()}
-        for company in snap.get("companies", []):
-            mine = local_companies.get(company["id"])
-            if mine is None or company.get("updated_at", "") > mine.get("updated_at", ""):
-                store.save_company({**company, "updated_at": company.get("updated_at", now())})
-                changed += 1
-        tombstones = {**store.get("tombstones", {}), **{k: v for k, v in snap.get("tombstones", {}).items()}}
         local_people = {p["id"]: p for p in store.people()}
         by_link = {p["profile_url"].lower(): p for p in local_people.values() if p.get("profile_url")}
         for person in snap.get("people", []):
             if tombstones.get(person["id"], "") > person.get("updated_at", ""):
                 continue
+            if person.get("company_id") in mapping:
+                person = {**person, "company_id": mapping[person["company_id"]]}
             mine = local_people.get(person["id"])
             if mine and (mine.get("profile_url") or "").lower() != (person.get("profile_url") or "").lower() and (mine.get("profile_url") or person.get("profile_url")):
                 # Both Macs handed out the same ID to different people while apart: the local one moves to a fresh ID.

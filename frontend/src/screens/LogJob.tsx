@@ -10,10 +10,22 @@ const REFERRAL = [['not_sought', 'No referral'], ['pending', 'Waiting on a refer
 export function LogJob({close, run, busy}: {close: () => void, run: Run, busy: string}) {
   const [f, setF] = useState<Obj>({stage: 'applied', url: '', applied_at: new Date().toISOString().slice(0, 10), signin_method: 'unknown', account_email: '',
     password: '', account_created: false, referral_status: 'not_sought', referral_contact: '', notes: '', title: '', company: ''});
-  const set = (k: string, v: any) => setF({...f, [k]: v});
+  const [dupe, setDupe] = useState('');
+  const set = (k: string, v: any) => {setF({...f, [k]: v}); if (k === 'url') setDupe('');};
   // Email/password (or "other") sign-ins can save a password for the company; social sign-ins don't need one.
   const needsPassword = ['email_password', 'other'].includes(f.signin_method);
   const valid = /^https?:\/\/\S+$/.test(f.url.trim());
+  // A matching link is usually the same job, but not always (some career sites reuse one link format).
+  // The first try explains which job it matched; "Log anyway" records it as a separate job.
+  const submit = async (force: boolean) => {
+    try {
+      await api('/jobs/log', 'POST', {...f, url: f.url.trim(), password: needsPassword ? f.password : '', force});
+      close();
+    } catch (e: any) {
+      if (String(e.message).startsWith('DUPLICATE:')) {setDupe(e.message.replace('DUPLICATE: ', '')); return;}
+      throw e;
+    }
+  };
   return <div className="overlay" onClick={close}><div className="modal wide" role="dialog" aria-modal="true" aria-label="Log an application" onClick={e => e.stopPropagation()}>
     <button className="icon-btn close" onClick={close} aria-label="Close"><X size={18}/></button>
     <span className="modal-orb"><ClipboardCheck size={22}/></span><h2>Log an application</h2>
@@ -33,8 +45,9 @@ export function LogJob({close, run, busy}: {close: () => void, run: Run, busy: s
       <label className="field">Company<input placeholder="optional — read from the posting" value={f.company} onChange={e => set('company', e.target.value)}/></label>
       <label className="field full">Notes<textarea rows={2} placeholder="Anything worth remembering" value={f.notes} onChange={e => set('notes', e.target.value)}/></label>
     </div>
+    {dupe && <div className="hint warn"><span>{dupe}</span></div>}
     <div className="modal-foot"><span className="muted small">Saved to the dashboard and your tracker sheet.</span>
       <div><Button onClick={close}>Cancel</Button>
-        <Button primary disabled={!valid || !!busy || (needsPassword && !!f.password && !f.account_email.trim())} onClick={() => run('log', async () => {await api('/jobs/log', 'POST', {...f, url: f.url.trim(), password: needsPassword ? f.password : ''}); close();}, f.stage === 'saved' ? 'Saved to apply later.' : 'Application logged.')}><ClipboardCheck size={15}/>{f.stage === 'saved' ? 'Save job' : 'Log application'}</Button></div></div>
+        <Button primary disabled={!valid || !!busy || (needsPassword && !!f.password && !f.account_email.trim())} onClick={() => run('log', () => submit(!!dupe))}><ClipboardCheck size={15}/>{dupe ? 'Log anyway' : f.stage === 'saved' ? 'Save job' : 'Log application'}</Button></div></div>
   </div></div>;
 }
