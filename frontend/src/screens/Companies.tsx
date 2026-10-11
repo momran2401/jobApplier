@@ -1,12 +1,11 @@
 import {useState} from 'react';
-import {Building2, Check, KeyRound, MessageCircleQuestion, Plus, Trash2} from 'lucide-react';
+import {Building2, Check, KeyRound, MessageCircleQuestion, Plus, Trash2, Users} from 'lucide-react';
 import {api, Obj, PanelProps} from '../api';
 import {Badge, Button, Empty, Logo, PageHead, Panel, SavedInput} from '../ui';
-import {ContactList} from './FindContacts';
 
 const SIGNIN: Obj = {unknown: 'Not recorded', none: 'No account needed', google: 'Sign in with Google', apple: 'Sign in with Apple', email_password: 'Email and password', other: 'Other'};
 
-export function Companies({state, run, busy, openJob}: PanelProps & {openJob: (id: string) => void}) {
+export function Companies({state, run, busy, openJob, openNetworking}: PanelProps & {openJob: (id: string) => void, openNetworking: () => void}) {
   const companies: Obj[] = state.companies || [];
   const [selected, setSelected] = useState<string>(companies[0]?.id || '');
   const company = companies.find(c => c.id === selected) || companies[0];
@@ -22,12 +21,12 @@ export function Companies({state, run, busy, openJob}: PanelProps & {openJob: (i
           {open(c) > 0 && <span className="tag amber">{open(c)}?</span>}
         </button>)}
       </aside>
-      {company && <CompanyDetail key={company.id} c={company} jobs={jobsOf(company)} run={run} busy={busy} openJob={openJob}/>}
+      {company && <CompanyDetail key={company.id} c={company} jobs={jobsOf(company)} people={(state.networking?.people || []).filter((p: Obj) => p.company_id === company.id)} run={run} busy={busy} openJob={openJob} openNetworking={openNetworking}/>}
     </div>}
   </div>;
 }
 
-function CompanyDetail({c, jobs, run, busy, openJob}: {c: Obj, jobs: Obj[], run: PanelProps['run'], busy: string, openJob: (id: string) => void}) {
+function CompanyDetail({c, jobs, people, run, busy, openJob, openNetworking}: {c: Obj, jobs: Obj[], people: Obj[], run: PanelProps['run'], busy: string, openJob: (id: string) => void, openNetworking: () => void}) {
   const [email, setEmail] = useState(c.account_email || ''), [password, setPassword] = useState(''), [question, setQuestion] = useState('');
   const [answers, setAnswers] = useState<Obj>({});
   const patch = (changes: Obj, msg?: string) => run('company', () => api(`/companies/${c.id}`, 'PATCH', changes), msg);
@@ -65,7 +64,10 @@ function CompanyDetail({c, jobs, run, busy, openJob}: {c: Obj, jobs: Obj[], run:
         <Button disabled={!question.trim() || !!busy} onClick={() => run('question', async () => {await api(`/companies/${c.id}/questions`, 'POST', {question}); setQuestion('');})}><Plus size={14}/>Add</Button></div>
     </Panel>
 
-    <Panel title={<>Contacts <span className="count">{(c.contacts || []).length}</span></>} sub="Referral contacts found for this company. Statuses are yours to keep up to date."><ContactList company={c} run={run} busy={busy}/></Panel>
+    <Panel title={<><Users size={15}/>People <span className="count">{people.length}</span></>} sub="People on your networking list at this company." action={<Button onClick={openNetworking}>Open Networking</Button>}>
+      {people.length === 0 ? <p className="muted small">Nobody yet. Add people on the Networking page.</p>
+        : people.map(p => <button key={p.id} className="row" onClick={openNetworking}><span className="row-main"><strong>{p.name || p.profile_url}</strong><small>{[p.role || p.headline, p.research_status.replace('_', ' ')].filter(Boolean).join(' · ')}</small></span>{p.draft?.status !== 'none' && <span className="tag">{p.draft.status.replace('_', ' ')}</span>}</button>)}
+    </Panel>
 
     <Panel title="Notes"><NotesEditor value={c.notes || ''} save={v => patch({notes: v}, 'Notes saved.')} busy={busy}/></Panel>
 

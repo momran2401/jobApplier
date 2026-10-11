@@ -4,7 +4,7 @@ import {api, Obj, PanelProps} from '../api';
 import {Button, PageHead, Panel} from '../ui';
 import {Tracker} from './Tracker';
 
-const KEYS = ['default_mode', 'always_letter', 'autonomous_daily_cap', 'autonomous_delay_minutes', 'monitor_minutes', 'text_phone', 'text_gateway', 'text_kinds', 'quiet_from', 'quiet_to', 'provider', 'model', 'effort', 'fallback_enabled', 'fallback_model', 'fast_model', 'ollama_context', 'ollama_timeout', 'ollama_url',
+const KEYS = ['default_mode', 'always_letter', 'match_enabled', 'match_github', 'autonomous_daily_cap', 'autonomous_delay_minutes', 'monitor_minutes', 'text_phone', 'text_gateway', 'text_kinds', 'quiet_from', 'quiet_to', 'provider', 'model', 'effort', 'fallback_enabled', 'fallback_model', 'fast_model', 'ollama_context', 'ollama_timeout', 'ollama_url',
   'max_model_calls', 'max_output_tokens', 'tex_main', 'skills_start', 'skills_end'];
 
 export function Settings({state, run, busy}: PanelProps) {
@@ -22,6 +22,8 @@ export function Settings({state, run, busy}: PanelProps) {
         <label className="field">Autonomous: max submissions per day<input type="number" min={1} max={50} value={s.autonomous_daily_cap} onChange={e => set('autonomous_daily_cap', Number(e.target.value))}/></label>
         <label className="field">Autonomous: wait before submitting (minutes)<input type="number" min={0} max={120} value={s.autonomous_delay_minutes} onChange={e => set('autonomous_delay_minutes', Number(e.target.value))}/></label>
         <label className="check" style={{alignSelf: 'end'}}><input type="checkbox" checked={!!s.always_letter} onChange={e => set('always_letter', e.target.checked)}/>Always draft a cover letter, even if the posting doesn’t mention one</label>
+        <label className="check"><input type="checkbox" checked={!!s.match_enabled} onChange={e => set('match_enabled', e.target.checked)}/>Score each tailored resume (HackerRank's open-source rubric + requirement coverage; one extra AI call)</label>
+        <label className="check"><input type="checkbox" checked={!!s.match_github} onChange={e => set('match_github', e.target.checked)}/>Include public GitHub signals from the GitHub link in your profile</label>
       </div>
     </Panel>
     <Panel title="Email monitor" sub="Reads replies from employers in the Gmail account that owns your tracker sheet (read-only), flags what needs action, and can text you.">

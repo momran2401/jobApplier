@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -20,6 +20,7 @@ from .ai import local_base, model_list, ollama_models, start_ollama
 from .browser import Browser
 from .documents import MAX_FILE, save_upload
 from .monitor import Monitor
+from .networking import Networking
 from .security import save_secret, secret
 from .store import Store, normalize_company, now
 from .tracker import FIELDS, SCRIPT, Tracker
@@ -80,6 +81,7 @@ def create_app(data_dir=None):
     sheets = Tracker(store)
     monitor = Monitor(store, sheets)
     workflow = Workflow(store, browser, sheets)
+    networking = Networking(store, browser, workflow)
     token = secrets.token_urlsafe(40)
 
     @asynccontextmanager
@@ -140,7 +142,7 @@ def create_app(data_dir=None):
                 "tracker": store.get("tracker"), "usage": store.get("usage", {}),
                 "last_inference": store.get("last_inference"), "progress": workflow.progress, "monitor": monitor.state(),
                 "batch_running": bool(workflow.batch_task and not workflow.batch_task.done()),
-                "events": store.events(), "sheet_fields": FIELDS,
+                "events": store.events(), "sheet_fields": FIELDS, "networking": networking.summary(),
                 "capabilities": {"latex": bool(shutil.which("tectonic") or shutil.which("pdflatex")),
                                  "anthropic_key": bool(secret("anthropic_key")),
                                  "codex": bool(shutil.which("codex") or os.path.exists("/opt/homebrew/bin/codex")), "tracker_connected": sheets.connected()}}
@@ -487,7 +489,7 @@ def create_app(data_dir=None):
     @app.put("/api/settings")
     async def save_settings(request: Request):
         changes = await request.json()
-        allowed = {"provider", "model", "ollama_url", "max_model_calls", "max_output_tokens", "tex_main", "skills_start", "skills_end", "fallback_enabled", "fallback_model", "ollama_context", "ollama_timeout", "effort", "fast_model", "always_letter", "default_mode", "autonomous_daily_cap", "autonomous_delay_minutes",
+        allowed = {"provider", "model", "ollama_url", "max_model_calls", "max_output_tokens", "tex_main", "skills_start", "skills_end", "fallback_enabled", "fallback_model", "ollama_context", "ollama_timeout", "effort", "fast_model", "always_letter", "match_enabled", "match_github", "default_mode", "autonomous_daily_cap", "autonomous_delay_minutes",
                    "monitor_minutes", "text_phone", "text_gateway", "text_kinds", "quiet_from", "quiet_to"}
         if set(changes) - allowed:
             raise ValueError("Unknown settings.")
@@ -496,7 +498,7 @@ def create_app(data_dir=None):
             raise ValueError("Choose Codex, Claude, or Ollama.")
         if settings["effort"] not in {"low", "medium", "high"}:
             raise ValueError("Effort must be low, medium, or high.")
-        if settings["default_mode"] not in {"assisted", "advisor", "autonomous"} or not isinstance(settings["always_letter"], bool):
+        if settings["default_mode"] not in {"assisted", "advisor", "autonomous"} or not all(isinstance(settings[k], bool) for k in ("always_letter", "match_enabled", "match_github")):
             raise ValueError("Invalid mode settings.")
         for field, low, high in [("autonomous_daily_cap", 1, 50), ("autonomous_delay_minutes", 0, 120), ("monitor_minutes", 0, 240),
                                  ("quiet_from", 0, 23), ("quiet_to", 0, 23)]:
@@ -552,32 +554,65 @@ def create_app(data_dir=None):
         await browser.open_site("https://www.linkedin.com/login")
         return {"opened": True}
 
-    @app.post("/api/contacts/find")
-    async def find_contacts(request: Request):
-        body = await request.json()
-        ids = [i for i in body.get("job_ids", []) if isinstance(i, str)][:10]
-        description = str(body.get("description", "")).strip()[:400]
-        if not ids or not description:
-            raise ValueError("Choose at least one job and describe who to look for.")
-        for jid in ids:
-            store.job(jid)
-        return {"started": workflow.start_contacts(ids, description)}
+    @app.put("/api/networking/setup")
+    async def networking_setup(request: Request):
+        return networking.save_setup(await request.json())
 
-    @app.patch("/api/companies/{cid}/contacts")
-    async def edit_contact(cid: str, request: Request):
+    @app.post("/api/networking/connections")
+    async def networking_connections(file: UploadFile = File(...)):
+        """Your LinkedIn Connections.csv (or the archive zip, from which only that file is read)."""
+        data = await file.read(60_000_000 + 1)
+        if len(data) > 60_000_000:
+            raise ValueError("That file is too large to be Connections.csv.")
+        return networking.import_connections(data)
+
+    @app.post("/api/networking/people")
+    async def networking_add(request: Request):
         body = await request.json()
-        company = store.company(cid)
-        for c in company.get("contacts", []):
-            if (c.get("url") or c.get("name")) == body.get("key"):
-                if body.get("status") in {"found", "contacted", "replied", "referred", "skip"}:
-                    c["status"] = body["status"]
-                if isinstance(body.get("note"), str):
-                    c["note"] = body["note"][:600]
-        return public_company(store.save_company(company))
+        urls = [u.strip() for u in str(body.get("urls", "")).split() if u.strip()] if isinstance(body.get("urls"), str) else [str(u) for u in body.get("urls", [])]
+        if not urls:
+            raise ValueError("Paste at least one profile link.")
+        return networking.add_links(urls, str(body.get("company", ""))[:120])
+
+    @app.post("/api/networking/discover")
+    async def networking_discover(request: Request):
+        body = await request.json()
+        ids = [i for i in body.get("company_ids", []) if isinstance(i, str)]
+        if not ids:
+            raise ValueError("Choose at least one company.")
+        return await networking.discover(ids)
+
+    @app.post("/api/networking/research")
+    async def networking_research(request: Request):
+        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        ids = [i for i in body.get("ids", []) if isinstance(i, str)] or None
+        return {"started": workflow.start_networking("research", ids)}
+
+    @app.post("/api/networking/drafts")
+    async def networking_drafts(request: Request):
+        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        ids = [i for i in body.get("ids", []) if isinstance(i, str)] or None
+        return {"started": workflow.start_networking("drafts", ids)}
+
+    @app.patch("/api/networking/people/{pid}")
+    async def networking_edit(pid: str, request: Request):
+        return networking.update_person(pid, await request.json())
+
+    @app.delete("/api/networking/people/{pid}")
+    async def networking_delete(pid: str):
+        store.person(pid)
+        store.delete_person(pid)
+        return {"deleted": pid}
+
+    @app.get("/api/networking/export")
+    async def networking_export(kind: Literal["csv", "drafts"] = "csv"):
+        if kind == "csv":
+            return PlainTextResponse(networking.list_csv(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="networking-list.csv"'})
+        return PlainTextResponse(networking.drafts_md(), media_type="text/markdown", headers={"Content-Disposition": 'attachment; filename="drafts.md"'})
 
     @app.post("/api/stop")
     async def stop_everything():
-        """Stop button: cancels running preparations, advice, ingests, contact searches and the email check."""
+        """Stop button: cancels running preparations, advice, ingests, networking runs and the email check."""
         n = workflow.stop_all() + monitor.stop()
         store.event(None, f"Stopped {n} running operation(s)." if n else "Nothing was running.")
         return {"stopped": n}

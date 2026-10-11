@@ -2,7 +2,6 @@ import {useState} from 'react';
 import {ArrowRight, Check, CheckCheck, CircleAlert, Copy, ExternalLink, Lightbulb, Pause, Play, Search, Users, X} from 'lucide-react';
 import {api, Obj, PanelProps} from '../api';
 import {Badge, Button, Empty, Logo, Progress, SavedInput} from '../ui';
-import {ContactList} from './FindContacts';
 
 export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps & {job: Obj, close: () => void, goProfile: () => void}) {
   const [view, setView] = useState(job.status === 'advised' ? 'advice' : 'overview');
@@ -10,7 +9,8 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
   const p = job.package;
   const company = (state.companies || []).find((c: Obj) => c.id === job.company_id);
   const copy = (key: string, text: string) => {navigator.clipboard.writeText(text).then(() => {setCopied(key); setTimeout(() => setCopied(''), 2000);}).catch(() => {});};
-  const tabs = [...(p?.advice_at ? ['advice'] : []), 'overview', 'materials', 'answers', ...(company?.contacts?.length ? ['contacts'] : []), 'activity'];
+  const m = p?.match;
+  const tabs = [...(p?.advice_at ? ['advice'] : []), 'overview', 'materials', ...(m ? ['match'] : []), 'answers', 'activity'];
   const mutate = (changes: Obj) => api(`/jobs/${job.id}`, 'PATCH', {revision: job.revision, ...changes});
   const locked = ['preparing', 'submitting'].includes(job.status);
   const canReview = !!p && ['ready', 'needs_attention'].includes(job.status);
@@ -41,6 +41,7 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
           <div className="brief">
             <div><span>ROLE</span><p>{job.summary || 'Read the posting to extract its requirements and check your fit.'}</p></div>
             <div><span>TAILORING</span><p>{p?.tailoring_summary || 'Your experience stays intact. Skills are tailored once your profile is ready.'}</p></div>
+            {m && <div><span>MATCH</span><p>{m.error ? `Scoring failed: ${m.error}` : <>{m.total}/{m.max} on HackerRank's rubric{m.coverage?.percent != null ? ` · ${m.coverage.percent}% of requirements mentioned` : ''} · <button className="text-link" onClick={() => setView('match')}>details</button></>}</p></div>}
             <div><span>NEXT STEP</span><p>{nextStep}</p></div>
           </div>
           {job.requirements?.length > 0 && <div className="sub-panel"><h3>Requirements</h3><div className="skill-cloud">{job.requirements.map((r: string, i: number) => <span key={i}>{r}</span>)}</div></div>}
@@ -108,6 +109,8 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
           {p.visual_reviewed && <span className="ok-text"><CheckCheck size={16}/> Document review complete</span>}
         </>)}
 
+        {view === 'match' && m && <MatchPanel m={m}/>}
+
         {view === 'answers' && <>
           <div className="sub-panel"><h3>Prepared answers</h3><p className="small muted">Values filled by the assistant. Check the final screenshot for manual entries or site defaults.</p>
             {p?.answers?.length ? p.answers.map((a: Obj, i: number) => <div className="qa" key={i}><strong>{a.question}</strong><p>{String(a.answer)}</p><small>Source: {a.source}</small></div>)
@@ -118,8 +121,6 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
           {p?.screenshot && <div className="sub-panel"><h3>Final browser review</h3><a href={'/api/file/' + p.screenshot} target="_blank" rel="noreferrer"><img className="shot" alt="Application form before submission" src={'/api/file/' + p.screenshot}/></a></div>}
           {job.receipt && <a className="btn" href={'/api/file/' + job.receipt} target="_blank" rel="noreferrer">View submission receipt <ExternalLink size={14}/></a>}
         </>}
-
-        {view === 'contacts' && <div className="sub-panel"><h3>Referral contacts at {company?.name}</h3><ContactList company={company} run={run} busy={busy}/></div>}
 
         {view === 'activity' && (events.length ? <ol className="timeline">{events.map((e: Obj) => <li key={e.id}><i/><div><p>{e.message}</p><small>{new Date(e.at).toLocaleString()}</small></div></li>)}</ol>
           : <Empty title="No activity yet">Preparation and submission events are recorded here.</Empty>)}
@@ -155,4 +156,31 @@ function EditsPanel({job, p, run, busy, locked}: {job: Obj, p: Obj, run: PanelPr
     </div>)}
     {!manual && changed && <div className="row-actions"><Button primary disabled={!!busy || locked} onClick={() => run('edits', () => api(`/jobs/${job.id}/edits`, 'POST', {accepted: [...picked], revision: job.revision}), 'Edits saved. Resume preparation to rebuild the resume.')}><Check size={14}/>Save accepted edits</Button></div>}
   </div>;
+}
+
+/** The match report: HackerRank's open-source intern rubric (one run, so noisy) and a deterministic keyword-coverage check. */
+function MatchPanel({m}: {m: Obj}) {
+  if (m.error) return <div className="hint warn"><CircleAlert size={16}/><span>Scoring failed: {m.error}. Prepare or get advice again to retry.</span></div>;
+  const pct = (a: number, b: number) => b ? Math.round(100 * a / b) : 0;
+  return <>
+    <div className="sub-panel"><div className="sub-head"><h3>HackerRank rubric · {m.total} / {m.max}</h3><span className="small muted">{new Date(m.scored_at).toLocaleDateString()}</span></div>
+      <p className="small muted">{m.caveat}</p>
+      <div className="score-bars">{m.categories.map((c: Obj) => <div className="score-row" key={c.key}>
+        <div className="score-head"><strong>{c.label}</strong><span className="mono">{c.score} / {c.max}</span></div>
+        <div className="bar"><i style={{width: pct(c.score, c.max) + '%'}}/></div>
+        <p className="small">{c.evidence}</p></div>)}</div>
+      <div className="score-row"><div className="score-head"><strong>Bonus</strong><span className="mono">+{m.bonus.total} / {m.bonus.max}</span></div>
+        <ul className="small">{m.bonus.items.filter((b: Obj) => b.points > 0).map((b: Obj) => <li key={b.key}>{b.label}: +{b.points}{b.rank ? ` (rank ${b.rank})` : ''} · {b.evidence}</li>)}
+          {!m.bonus.items.some((b: Obj) => b.points > 0) && <li className="muted">No bonus items apply.</li>}</ul></div>
+      {m.deductions.total > 0 && <div className="score-row"><div className="score-head"><strong>Deductions</strong><span className="mono">-{m.deductions.total}</span></div><p className="small">{m.deductions.reasons}</p></div>}
+      <div className="two-col">
+        <div><h4>Strengths</h4><ul className="small">{m.strengths.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul></div>
+        <div><h4>To improve</h4><ul className="small">{m.improvements.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul></div>
+      </div>
+      <p className="small muted">GitHub: {m.github?.used ? `${m.github.username}, ${m.github.total_projects} repos with your commits (${m.github.open_source} with other contributors)` : m.github?.note || 'not used'}.</p>
+    </div>
+    {m.coverage && <div className="sub-panel"><h3>Requirements mentioned in the resume · {m.coverage.covered} of {m.coverage.total}{m.coverage.percent != null ? ` (${m.coverage.percent}%)` : ''}</h3>
+      <p className="small muted">Plain text matching against the tailored PDF, the way a recruiter's keyword search works. Repeatable; no AI involved.</p>
+      <ul className="coverage">{m.coverage.requirements.map((r: Obj, i: number) => <li key={i} className={r.covered ? 'ok' : 'miss'}>{r.covered ? <Check size={13}/> : <X size={13}/>}<span>{r.text}</span>{r.missing.length > 0 && <small>missing: {r.missing.join(', ')}</small>}</li>)}</ul></div>}
+  </>;
 }

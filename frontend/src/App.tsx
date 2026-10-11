@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {ArrowUpRight, Check, CircleAlert, ClipboardCheck, Link2, LoaderCircle, Mail, Plus, RefreshCw, Search, ShieldCheck, Square, Users, X} from 'lucide-react';
+import {ArrowUpRight, Check, CircleAlert, ClipboardCheck, Link2, LoaderCircle, Mail, Plus, RefreshCw, Search, ShieldCheck, Square, X} from 'lucide-react';
 import {ago, api, date, hasToken, labels, Obj, setToken} from './api';
 import {Button, Logo} from './ui';
 import {Profile} from './screens/Profile';
@@ -7,9 +7,9 @@ import {Companies} from './screens/Companies';
 import {Settings} from './screens/Settings';
 import {JobDetail} from './screens/JobDetail';
 import {LogJob} from './screens/LogJob';
-import {FindContacts} from './screens/FindContacts';
+import {Networking} from './screens/Networking';
 
-const NAV = [['applications', 'Dashboard'], ['profile', 'Profile'], ['companies', 'Companies'], ['settings', 'Settings']] as const;
+const NAV = [['applications', 'Dashboard'], ['profile', 'Profile'], ['companies', 'Companies'], ['networking', 'Networking'], ['settings', 'Settings']] as const;
 const readMode = (): 'applier' | 'tracker' => {try {return localStorage.getItem('mode') === 'tracker' ? 'tracker' : 'applier';} catch {return 'applier';}};
 // Time-of-day greeting for the dashboard heading; the name comes from the Identity section of profile.md.
 const greeting = () => {const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : h < 22 ? 'Good evening' : 'Working late';};
@@ -23,7 +23,7 @@ export default function App() {
   const [mode, setModeState] = useState<'applier' | 'tracker'>(readMode);
   const setMode = (m: 'applier' | 'tracker') => {setModeState(m); try {localStorage.setItem('mode', m);} catch {}};
   const [query, setQuery] = useState(''), [selected, setSelected] = useState<string[]>([]), [detail, setDetail] = useState<string | null>(null);
-  const [importOpen, setImportOpen] = useState(false), [logOpen, setLogOpen] = useState(false), [importMode, setImportMode] = useState(''), [contactsOpen, setContactsOpen] = useState(false), [links, setLinks] = useState(''), [busy, setBusy] = useState(''), [notice, setNotice] = useState(''), [error, setError] = useState('');
+  const [importOpen, setImportOpen] = useState(false), [logOpen, setLogOpen] = useState(false), [importMode, setImportMode] = useState(''), [links, setLinks] = useState(''), [busy, setBusy] = useState(''), [notice, setNotice] = useState(''), [error, setError] = useState('');
   // The dashboard polls every few seconds; only re-render when something actually changed.
   const refresh = useCallback(async () => {
     const next = await api('/state'), text = JSON.stringify(next);
@@ -44,7 +44,7 @@ export default function App() {
   }
   useEffect(() => {if (notice) {const id = setTimeout(() => setNotice(''), 6500); return () => clearTimeout(id);}}, [notice]);
   useEffect(() => {
-    const esc = (e: KeyboardEvent) => {if (e.key === 'Escape') {setImportOpen(false); setLogOpen(false); setContactsOpen(false); setDetail(null);}};
+    const esc = (e: KeyboardEvent) => {if (e.key === 'Escape') {setImportOpen(false); setLogOpen(false); setDetail(null);}};
     window.addEventListener('keydown', esc);
     return () => window.removeEventListener('keydown', esc);
   }, []);
@@ -64,7 +64,7 @@ export default function App() {
       suggested: j.package.suggested_answer || '', job: j, company: {name: j.company, id: j.company_id}})),
   ];
   const progress: [string, Obj][] = Object.entries(state.progress || {});
-  const runningNames = progress.map(([key, p]) => {const j = jobs.find(x => x.id === key); return j ? j.company : p.operation === 'ingest' ? 'Profile' : p.operation === 'contacts' ? 'Contact search' : key;});
+  const runningNames = progress.map(([key, p]) => {const j = jobs.find(x => x.id === key); return j ? j.company : p.operation === 'ingest' ? 'Profile' : p.operation === 'networking' ? 'Networking' : key;});
   const filtered = jobs.filter(j => `${j.company} ${j.title}`.toLowerCase().includes(query.toLowerCase()) && (filter === 'all'
     || filter === 'review' && ['ready', 'approved', 'needs_attention'].includes(j.status)
     || filter === 'pending' && j.referral_status === 'pending'
@@ -113,7 +113,6 @@ export default function App() {
           <Mail size={15} className={busy === 'monitor' || state.monitor?.running ? 'spin' : ''}/></button>
         <button className="round" title="Refresh" aria-label="Refresh workspace" onClick={() => run('refresh', refresh)}><RefreshCw size={15} className={busy === 'refresh' ? 'spin' : ''}/></button>
       </div>
-      {tracker && <button className="pill" disabled={!jobs.length} onClick={() => setContactsOpen(true)}><Users size={14}/>Find contacts</button>}
       {tracker ? <button className="cream" onClick={() => setLogOpen(true)}><ClipboardCheck size={15}/>Log application</button>
         : <button className="cream" onClick={() => setImportOpen(true)}><Plus size={15}/>Add job links</button>}
     </header>
@@ -180,7 +179,7 @@ export default function App() {
                   <span className="serif company"><Logo company={companyOf(j)} name={j.company} size={30}/>{j.company}{j.mode === 'autonomous' && <span className="tag auto" title="Autonomous: submits without review">auto</span>}</span>
                   <span className="row-main"><span className="title">{j.title || 'Reading posting…'}</span><span className="sub">{j.location || (j.posting_kind === 'expression_of_interest' ? 'Expression of interest' : '')}</span></span>
                   {state.progress?.[j.id] ? <span className="status s-preparing"><i/>{state.progress[j.id].stage}</span> : <span className={'status s-' + j.status}><i/>{labels[j.status] || j.status}</span>}
-                  <span className="row-ref">{j.referral_status === 'pending' ? <span className="amber">Referral hold</span> : j.referral_status === 'received' ? <span className="green">Referral</span> : j.contact_profile_url ? 'Contact found' : j.action_required ? <span className="amber">Action</span> : '—'}</span>
+                  <span className="row-ref">{j.referral_status === 'pending' ? <span className="amber">Referral hold</span> : j.referral_status === 'received' ? <span className="green">Referral</span> : j.action_required ? <span className="amber">Action</span> : '—'}</span>
                   <span className="row-date" title={tracker ? 'Date applied' : 'Date added'}>{date(tracker ? (j.submitted_at || j.created_at) : j.created_at)}</span>
                   <ArrowUpRight size={15} className="row-go"/>
                 </div>;
@@ -195,7 +194,8 @@ export default function App() {
         </div>
       </div>}
       {screen === 'profile' && <Profile state={state} run={run} busy={busy}/>}
-      {screen === 'companies' && <Companies state={state} run={run} busy={busy} openJob={id => setDetail(id)}/>}
+      {screen === 'companies' && <Companies state={state} run={run} busy={busy} openJob={id => setDetail(id)} openNetworking={() => setScreen('networking')}/>}
+      {screen === 'networking' && <Networking state={state} run={run} busy={busy}/>}
       {screen === 'settings' && <Settings state={state} run={run} busy={busy}/>}
     </main>
 
@@ -226,7 +226,6 @@ export default function App() {
           }, 'Jobs added.')}><Plus size={15}/>Add</Button></div></div>
     </div></div>}
     {logOpen && <LogJob close={() => setLogOpen(false)} run={run} busy={busy}/>}
-    {contactsOpen && <FindContacts jobs={selected.length ? jobs.filter(j => selected.includes(j.id)) : jobs} close={() => setContactsOpen(false)} run={run} busy={busy}/>}
     {active && <JobDetail job={active} state={state} close={() => setDetail(null)} run={run} busy={busy} goProfile={() => {setDetail(null); setScreen('profile');}}/>}
   </div>;
 }

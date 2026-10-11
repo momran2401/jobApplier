@@ -617,57 +617,159 @@ async def test_email_monitor_flags_actions_and_texts_only_configured_kinds(store
     assert (await Monitor(store, tracker).run())["checked"] == 0
 
 
-@pytest.mark.asyncio
-async def test_contact_finder_reads_only_respects_limits_and_ranks(store, monkeypatch):
-    from jobapplier import ai
-    from jobapplier import contacts as contacts_module
-    from jobapplier.contacts import LIMITS, ContactFinder
+CONNECTIONS_CSV = """Notes:
+"When exporting your connection data, you may notice that some of the email addresses are missing."
+
+First Name,Last Name,URL,Email Address,Company,Position,Connected On
+Ana,Lopez,https://www.linkedin.com/in/ana-lopez?trk=x,,Acme Industries,University Recruiter,12 Mar 2024
+Bo,Chen,https://www.linkedin.com/in/bo-chen,bo@example.com,Other Corp,Engineer,01 Jan 2024
+"""
+
+
+def networking_for(store):
+    from jobapplier.networking import Networking
+    wf = Workflow(store, type("B", (), {"lock": asyncio.Lock()})(), None)
+    return Networking(store, None, wf)
+
+
+def test_connections_csv_import_matches_target_companies_and_keeps_ids(store):
+    from jobapplier.networking import parse_connections
     job, _ = store.add_job("https://careers.acme.com/jobs/1")
-    store.update(job["id"], {"company": "Acme", "title": "EE Intern"}, invalidate=False)
+    store.update(job["id"], {"company": "Acme"}, invalidate=False)
+    store.link_job_company(job["id"])
+    n = networking_for(store)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("Basic_LinkedInDataExport/Connections.csv", CONNECTIONS_CSV)
+        z.writestr("Basic_LinkedInDataExport/messages.csv", "private")
+    assert [r["name"] for r in parse_connections(archive.getvalue())] == ["Ana Lopez", "Bo Chen"]  # only Connections.csv is read
+    result = n.import_connections(CONNECTIONS_CSV.encode())
+    assert result == {"count": 2, "matched": 1}
+    people = store.people()
+    assert len(people) == 1 and people[0]["id"] == "person-001" and people[0]["connected"] and people[0]["profile_url"] == "https://www.linkedin.com/in/ana-lopez"
+    assert "private" not in str(store.get("connections"))
+    # The same link pasted again is the same person; a new one gets the next ID even after a deletion.
+    added = n.add_links(["linkedin.com/in/Ana-Lopez/", "https://www.linkedin.com/in/new-person"], "Acme")
+    assert added["duplicates"] == ["person-001"] and added["added"] == ["person-002"]
+    store.delete_person("person-002")
+    assert n.add_links(["https://www.linkedin.com/in/third"])["added"] == ["person-003"]
+    with pytest.raises(ValueError):
+        parse_connections(b"name,email\nx,y")
+
+
+@pytest.mark.asyncio
+async def test_networking_research_keeps_only_sourced_claims_and_respects_limits(store, monkeypatch):
+    from jobapplier import ai
+    from jobapplier import networking as module
+    from jobapplier.networking import LIMITS
+    n = networking_for(store)
+    person, _ = n.add_person("Ana Lopez", "https://www.linkedin.com/in/ana-lopez", company="Acme")
     visited = []
 
     async def read_page(url, wait_ms=0, keep_open_if=None):
         visited.append(url)
-        label = lambda n: f"Person {n}\nUniversity Recruiter at Acme\nAustin"  # noqa: E731
-        return {"url": url, "title": "People", "text": "", "links": [{"label": label(n), "url": f"https://www.linkedin.com/in/person{n}?x=1"} for n in range(6)]}
-    browser = type("B", (), {"read_page": staticmethod(read_page)})()
-    monkeypatch.setattr(contacts_module.asyncio, "sleep", AsyncMock())
-
-    async def no_web(url):
-        raise ValueError("offline")
-    monkeypatch.setattr(contacts_module, "fetch_text", no_web)
+        if "recent-activity" in url:
+            return {"url": url, "title": "Activity", "text": "Ana Lopez: We just opened three firmware roles on my team. Why I love debugging...",
+                    "links": [{"label": "post", "url": "https://www.linkedin.com/posts/ana-lopez_firmware-activity-123?utm=1"}]}
+        return {"url": url, "title": "Ana Lopez | LinkedIn", "text": "Ana Lopez\nUniversity Recruiter at Acme\nAustin, Texas", "links": []}
+    n.browser = type("B", (), {"read_page": staticmethod(read_page)})()
+    monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(module, "web_search", AsyncMock(return_value=[]))
 
     async def fake_json(self, task, data, stable=None, local_ok=True, fast=False):
-        people = data["people"]
-        return {"contacts": [{"name": people[0]["name"], "headline": people[0]["headline"], "url": people[0]["url"], "source": "linkedin",
-                              "score": 90, "why": "Recruits interns", "note": "Hi Person 0, I'm applying to Acme..."},
-                             {"name": "Made Up", "url": "https://www.linkedin.com/in/nobody", "score": 99, "note": "x"}]}
+        return {"role": "University Recruiter", "company": "Acme", "role_source_url": "https://www.linkedin.com/in/ana-lopez",
+                "trigger": {"kind": "open_role", "date": "2026-10-01", "date_precision": "day", "source_url": "https://www.linkedin.com/posts/ana-lopez_firmware-activity-123", "note": "Three firmware roles opened."},
+                "samples": [{"url": "https://www.linkedin.com/posts/ana-lopez_firmware-activity-123", "date": "2026-10-01", "kind": "post", "snippet": "We just opened three firmware roles on my team."},
+                            {"url": "https://www.linkedin.com/in/ana-lopez/recent-activity/all/", "date": "", "kind": "post", "snippet": "Why I love debugging..."},
+                            {"url": "https://example.com/made-up", "date": "", "kind": "post", "snippet": "invented"}],
+                "sample_gaps": "", "style": {"label": "Driver", "confidence": "medium", "why": "Short direct sentences.", "patterns": "short sentences, no emoji"},
+                "hook": {"text": "Why I love debugging", "url": "https://www.linkedin.com/in/ana-lopez/recent-activity/all/"},
+                "mutual": {"name": "Sam Mutual", "source_url": "https://nowhere.example/not-read"},
+                "research_status": "ready", "note": "Recruits interns."}
     monkeypatch.setattr(ai.Model, "json", fake_json)
-    finder = ContactFinder(store, browser, {}, lambda *a, **k: None, lambda *a, **k: None)
-    await finder.find("contacts:test", [job["id"]], "university recruiters")
-    assert len(visited) == LIMITS["pages_per_job"] and all("/search/results/people/" in v for v in visited)
-    company = store.company_for(store.job(job["id"]), create=False)
-    assert [c["name"] for c in company["contacts"]] == ["Person 0"]  # invented people are dropped
-    assert company["contacts"][0]["url"] == "https://www.linkedin.com/in/person0" and store.job(job["id"])["contact_profile_url"].endswith("person0")
-    assert finder.quota_left() == LIMITS["results_per_day"] - 12
-    # Quota exhausted: no more LinkedIn reads.
-    store.set("linkedin_quota", {"day": store.get("linkedin_quota")["day"], "count": LIMITS["results_per_day"]})
+    await n.research("networking:research")
+    assert visited == ["https://www.linkedin.com/in/ana-lopez", "https://www.linkedin.com/in/ana-lopez/recent-activity/all/"]
+    p = store.person(person["id"])
+    assert p["research_status"] == "ready" and p["role"] == "University Recruiter" and p["trigger"]["kind"] == "open_role"
+    assert [s["snippet"] for s in p["samples"]] == ["We just opened three firmware roles on my team.", "Why I love debugging..."]  # invented source dropped
+    assert p["mutual"] == {"status": "none", "name": "", "source_url": ""}  # a mutual without a read source is not recorded
+    assert p["style"]["label"] == "Driver" and n.quota_left() == LIMITS["pages_per_day"] - 2
+    assert (store.root / "networking" / "networking-list.csv").read_text().count("person-001") == 1
+    assert len(list((store.root / "networking" / "versions").glob("*-evidence.json"))) == 1
+    # Quota exhausted: LinkedIn is not read and the run falls back to public search.
+    store.set("linkedin_quota", {"day": store.get("linkedin_quota")["day"], "count": LIMITS["pages_per_day"]})
     visited.clear()
-    cards, note = await finder.linkedin_people("Acme", "recruiters", 2)
-    assert cards == [] and "limit" in note and visited == []
+    pages, note = await n.read_sources(p, n.setup())
+    assert visited == [] and "limit" in note
 
 
 @pytest.mark.asyncio
-async def test_contact_finder_asks_for_linkedin_login(store, monkeypatch):
-    from jobapplier import contacts as contacts_module
-    from jobapplier.contacts import ContactFinder
+async def test_networking_research_stops_at_linkedin_login(store, monkeypatch):
+    from jobapplier import networking as module
+    n = networking_for(store)
+    n.add_person("Ana Lopez", "https://www.linkedin.com/in/ana-lopez")
 
     async def read_page(url, wait_ms=0, keep_open_if=None):
         return {"url": "https://www.linkedin.com/authwall?x", "title": "Sign in | LinkedIn", "text": "", "links": []}
-    monkeypatch.setattr(contacts_module.asyncio, "sleep", AsyncMock())
-    finder = ContactFinder(store, type("B", (), {"read_page": staticmethod(read_page)})(), {}, lambda *a, **k: None, lambda *a, **k: None)
-    cards, note = await finder.linkedin_people("Acme", "recruiters", 2)
-    assert cards == [] and "log in" in note.lower()
+    n.browser = type("B", (), {"read_page": staticmethod(read_page)})()
+    monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+    await n.research("networking:research")
+    assert store.people()[0]["research_status"] == "pending" and "log in" in store.events()[0]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_networking_drafts_are_checked_and_never_sent(store, monkeypatch):
+    from jobapplier import ai
+    from jobapplier.networking import check_draft
+    n = networking_for(store)
+    n.save_setup({"intro": "I'm an ECE student at UT Austin.", "target_role": "firmware intern"})
+    ready, _ = n.add_person("Ana Lopez", "https://www.linkedin.com/in/ana-lopez", company="Acme")
+    ready.update(research_status="ready", role="Recruiter", role_source_url="https://www.linkedin.com/in/ana-lopez",
+                 samples=[{"url": "https://www.linkedin.com/posts/ana-123", "date": "", "kind": "post", "snippet": "We opened three firmware roles."}],
+                 hook={"text": "We opened three firmware roles.", "url": "https://www.linkedin.com/posts/ana-123"},
+                 mutual={"status": "unverified", "name": "Sam Mutual", "source_url": ""})
+    store.save_person(ready)
+    thin, _ = n.add_person("Bo Chen", "https://www.linkedin.com/in/bo-chen", company="Acme")
+    store.save_person({**thin, "research_status": "needs_review", "research_note": "No writing found."})
+    good = "Ana, your post about opening three firmware roles caught my eye. I'm an ECE student at UT Austin working on embedded projects. What made the team decide to grow firmware specifically this year?"
+    assert check_draft(good, "https://www.linkedin.com/posts/ana-123", ready) == []
+    assert check_draft(good + " Could you refer me?", "https://www.linkedin.com/posts/ana-123", ready) == ["must contain exactly one question", 'contains "refer me"']
+    assert "source link" in check_draft(good, "https://elsewhere.example/post", ready)[0]
+    assert "mutual" in check_draft(good.replace("Ana,", "Ana, Sam mentioned you."), "https://www.linkedin.com/posts/ana-123", ready)[0]
+    calls = []
+
+    async def fake_json(self, task, data, stable=None, local_ok=True, fast=False):
+        calls.append(data["person"]["name"])
+        return {"draft_text": good, "draft_source_url": "https://www.linkedin.com/posts/ana-123", "review_note": "", "needs_review": False}
+    monkeypatch.setattr(ai.Model, "json", fake_json)
+    await n.drafts("networking:drafts", [ready["id"], thin["id"]])
+    assert calls == ["Ana Lopez"]  # nothing is drafted without ready evidence
+    a, b = store.person(ready["id"]), store.person(thin["id"])
+    assert a["draft"]["status"] == "drafted" and a["draft"]["text"] == good and a["research_status"] == "ready"
+    assert b["draft"]["status"] == "needs_review" and b["draft"]["text"] == "" and "needs_review" in b["draft"]["review_note"]
+    assert "> " + good in n.drafts_md() and "sent" in n.drafts_md()
+    # Your decision: reviewed/closed, a confirmed mutual, an edited draft.
+    a = n.update_person(a["id"], {"draft_status": "reviewed", "mutual_name": "Sam Mutual"})
+    assert a["draft"]["status"] == "reviewed" and a["mutual"]["status"] == "verified"
+    with pytest.raises(ValueError):
+        n.update_person(a["id"], {"draft_status": "sent"})
+
+
+def test_networking_routes_and_state(tmp_path):
+    with patch("jobapplier.app.secret", return_value=None), TestClient(create_app(tmp_path)) as client:
+        h = {"x-workspace-token": client.get("/api/bootstrap").json()["token"]}
+        r = client.put("/api/networking/setup", headers=h, json={"target_role": "firmware intern", "people_per_run": 3, "linkedin_reading": False})
+        assert r.json()["people_per_run"] == 3 and r.json()["linkedin_reading"] is False
+        assert client.put("/api/networking/setup", headers=h, json={"people_per_run": 50}).status_code == 400
+        r = client.post("/api/networking/connections", headers=h, files={"file": ("Connections.csv", CONNECTIONS_CSV.encode(), "text/csv")})
+        assert r.json()["count"] == 2
+        r = client.post("/api/networking/people", headers=h, json={"urls": "https://www.linkedin.com/in/someone\nnot a link", "company": "Acme"})
+        assert r.json()["added"] == ["person-001"] and r.json()["errors"]
+        state = client.get("/api/state", headers=h).json()["networking"]
+        assert state["connections"]["count"] == 2 and state["people"][0]["id"] == "person-001" and state["setup"]["target_role"] == "firmware intern"
+        assert "person-001" in client.get("/api/networking/export?kind=csv", headers=h).text
+        assert client.delete("/api/networking/people/person-001", headers=h).json() == {"deleted": "person-001"}
+        assert client.delete("/api/networking/people/person-001", headers=h).status_code == 404
 
 
 def test_cover_letter_written_when_mentioned_even_if_optional():
@@ -757,3 +859,61 @@ def test_store_job_to_apply_later_then_mark_applied(tmp_path):
         done = client.post(f"/api/jobs/{job['id']}/applied", headers=h).json()
         assert done["status"] == "applied" and done["submitted_at"] and done["review_notes"] == "Due Friday" and done["signin_method"] == "google"
         assert client.post(f"/api/jobs/{job['id']}/applied", headers=h).status_code == 400
+
+
+def test_match_rubric_validation_enforces_hackerrank_caps_and_bonus_rules():
+    from jobapplier.match import coverage, load_rubric, render_task, validate
+    role = load_rubric()
+    task = render_task(role)
+    assert "{%" not in task and "{{" not in task and "4 points for ranks 1-100" in task and "open_source: 0-35" in task
+    found = {"scores": {"open_source": {"score": 50, "evidence": "all personal repos"}, "self_projects": {"score": 12, "evidence": "x"},
+                        "production": {"score": "7", "evidence": "internship"}, "technical_skills": {"score": -3, "evidence": ""}},
+             "bonus_points": {"items": {"gsoc": {"points": 5, "evidence": "GSoC 2025"}, "orchestrate": {"rank": 150, "points": 4, "evidence": "rank 150"},
+                                        "founder": {"points": 7, "evidence": "founded"}, "portfolio": {"points": 2, "evidence": "site"}}},
+             "deductions": {"total": -4, "reasons": "none"}, "key_strengths": ["a", "b", "c", "d", "e", "f"], "areas_for_improvement": ["x"]}
+    r = validate(role, found)
+    by = {c["key"]: c for c in r["categories"]}
+    assert by["open_source"]["score"] == 35 and by["production"]["score"] == 7 and by["technical_skills"]["score"] == 0 and by["ai_fluency"]["score"] == 0
+    assert by["technical_skills"]["evidence"] == "No evidence given."
+    bonus = {b["key"]: b for b in r["bonus"]["items"]}
+    assert bonus["orchestrate"]["points"] == 3 and "rank 150 allows 3" in bonus["orchestrate"]["evidence"]  # tier points come from the rank
+    assert bonus["founder"]["points"] == 0 and "allowed [0, 3, 4, 5]" in bonus["founder"]["evidence"]
+    assert bonus["gsoc"]["points"] == 5 and bonus["portfolio"]["points"] == 2 and bonus["linkedin"]["points"] == 0
+    assert r["bonus"]["total"] == 10 and r["deductions"]["total"] == 0 and r["total"] == 35 + 12 + 7 + 10 and r["max"] == 130
+    assert len(r["strengths"]) == 5
+    assert validate(role, {})["total"] == 0
+    cov = coverage(["Experience with C++ and embedded firmware", "Kubernetes and Go", ""], "Skills: C/C++, Python, embedded firmware on STM32")
+    assert cov["total"] == 2 and cov["covered"] == 1 and cov["percent"] == 50 and cov["requirements"][1]["missing"] == ["kubernetes", "go"]
+
+
+@pytest.mark.asyncio
+async def test_match_report_reuses_scores_and_survives_failures(store, tmp_path, monkeypatch):
+    from jobapplier import match as module
+    from jobapplier.match import match_report
+    pdf = tmp_path / "resume.pdf"
+    from pypdf import PdfWriter
+    w = PdfWriter()
+    w.add_blank_page(width=200, height=200)
+    w.write(str(pdf))
+    monkeypatch.setattr(module, "pdf_text", lambda path: "Python firmware STM32")
+    monkeypatch.setattr(module, "github_signals", AsyncMock(return_value={"used": True, "username": "me", "profile": {}, "projects": [], "total_projects": 0, "open_source": 0, "note": ""}))
+    calls = []
+
+    class M:
+        async def json(self, task, data, **kw):
+            calls.append(data)
+            return {"scores": {"technical_skills": {"score": 6, "evidence": "Python"}}, "bonus_points": {"items": {}}, "deductions": {"total": 0, "reasons": ""},
+                    "key_strengths": ["Python"], "areas_for_improvement": ["projects"]}
+    resume = {"path": str(pdf.relative_to(tmp_path)), "sha256": "abc"}
+    store.root = tmp_path
+    r = await match_report(M(), store, resume, ["Python", "Rust"], {"github_url": "https://github.com/me"})
+    assert r["total"] == 6 and r["coverage"]["percent"] == 50 and r["github"]["used"] and r["resume_sha256"] == "abc" and "GITHUB DATA" in calls[0]["resume_text"]
+    assert await match_report(M(), store, resume, [], {}, previous=r) is r and len(calls) == 1  # same PDF: no second call
+    monkeypatch.setattr(module, "pdf_text", lambda path: (_ for _ in ()).throw(ValueError("bad pdf")))
+    bad = await match_report(M(), store, {"path": "x.pdf", "sha256": "zzz"}, [], {})
+    assert "bad pdf" in bad["error"]
+
+
+def test_plain_voice_strips_em_dashes_between_words():
+    from jobapplier.workflow import plain
+    assert plain("We shipped it — fast — and it worked. 2019–2021 at CERN – really.") == "We shipped it, fast, and it worked. 2019–2021 at CERN, really."

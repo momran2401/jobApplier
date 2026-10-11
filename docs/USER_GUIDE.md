@@ -6,7 +6,7 @@ passwords and the tracker link live in your Mac's Keychain.
 
 ## Stop button
 
-While anything is running (a preparation, advice, a document being read, a contact search, the email check), a red
+While anything is running (a preparation, advice, a document being read, a networking run, the email check), a red
 **Stop** button appears in the top bar. It cancels everything; the job is marked paused so you can resume later.
 The only thing it does not interrupt is an application whose Submit button has already been clicked, so the
 outcome gets recorded.
@@ -46,6 +46,22 @@ The Dashboard's **Questions** panel collects everything the assistant needs from
 - Experience wording suggestions are shown side by side. In AI Applier mode you can tick ones to apply; they are
   applied to that application's copy only. Your master resume source is never modified.
 
+## Match score
+
+Every tailored resume (Advisor, AI Applier, Autonomous) gets a **Match** tab in the job drawer with two parts:
+
+- **HackerRank rubric**: the scoring prompt and rules from HackerRank's open-source resume scorer
+  ([interviewstreet/hiring-agent](https://github.com/interviewstreet/hiring-agent), MIT) run once on the tailored
+  PDF text, with public GitHub signals from the GitHub link in your profile when enabled. Categories: open source
+  (35), self projects (30), production experience (25), technical skills (10), AI fluency (10), plus capped
+  bonuses and deductions; the caps and bonus rules are enforced in code, not by the model. It is one company's
+  intern rubric and the same resume can move about ten points between runs, so read the evidence, not just the
+  number. The score is kept until the resume PDF changes.
+- **Requirements mentioned**: which of the posting's extracted requirements the resume text actually contains,
+  by plain keyword matching (repeatable, no AI). Missing terms are listed per requirement.
+
+Settings → Applying turns the score and the GitHub lookup on or off. The score never blocks anything.
+
 ## Email monitor
 
 The mail icon in the top bar reads recent replies from employers in the Gmail account that owns your tracker
@@ -55,13 +71,36 @@ application, and shown in the Dashboard's **Action required** panel with a link 
 offers update the status. Settings → Email monitor turns on automatic checks (every 15/30/60 minutes while the
 app runs) and optional texts to your own phone through your carrier's email-to-text address, with quiet hours.
 
-## Find contacts (Tracker mode)
+## Networking
 
-**Find contacts** searches the web and reads LinkedIn people-search results in the app's own Chrome window
-(log in to LinkedIn there once) for the kind of person you describe, at the companies you select. It only
-reads: it never connects, follows or messages. Each contact gets a short draft note in your voice to copy.
-Limits: 2 result pages per job and 40 profiles a day, with pauses between pages. Contacts live on the
-company record and in the job's **Contacts** tab, with a status you keep up to date.
+The **Networking** page builds a list of people worth talking to at the companies you apply to, records
+evidence about each one, and drafts a first message you review and send yourself. It never sends anything,
+never connects or follows anyone, and never schedules follow-ups.
+
+1. **Setup**: your target role, a one-line introduction (the only thing about you that goes into a message),
+   how many people to research per run (default 5), and whether LinkedIn may be read.
+2. **Sources**: upload your LinkedIn **Connections.csv** (Settings & Privacy → Data privacy → Get a copy of your
+   data → Connections; a whole archive is accepted, but only that one file is read and kept). Connections at
+   your target companies join the list. Paste profile links of people you found yourself, or run one public web
+   search per company (search engines often block automated lookups; an empty result just means nothing
+   usable came back).
+3. **Research** reads sources for people already on the list, at most 5 per run and 30 LinkedIn pages a day,
+   with pauses: the profile and its recent activity in the app's own Chrome (after a one-time login via **Open
+   LinkedIn login**), or public search snippets when LinkedIn reading is off. It records the current role,
+   a recent trigger (move, promotion, open role) with its date, up to five samples of the person's own
+   writing, a tentative writing style (Driver, Influencer, Steady, Analyst, or insufficient evidence), and one
+   "hook" they wrote. Every claim keeps the URL it came from; anything the model states without a source among
+   the pages read is dropped. A mutual connection stays *unverified* until you confirm it by name.
+4. **Write drafts** for people whose research is *Ready*: 35-65 words, one easy question about something they
+   actually wrote, no pitch, flattery or referral request. Each draft is checked in code (length, exactly one
+   question, no banned asks, a source from the evidence, no unverified mutual) and lands as *Drafted* or
+   *Draft needs review* with the reason. People without a usable source get no draft, only a note.
+5. Open a person to see the evidence beside the draft, edit the text, **Copy** it, open the profile, and mark
+   it **Reviewed** (you sent it) or **Close** it.
+
+Every run freezes a versioned copy under `data/networking/versions/` (list CSV, evidence JSON, drafts
+Markdown); the current `networking-list.csv` and `drafts.md` are also there, and the CSV can be downloaded
+from the page. The list keeps a stable ID per person (`person-001`, ...), deduplicated by profile link.
 
 ## Profile
 

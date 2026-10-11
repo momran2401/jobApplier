@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from . import profile as profiledoc
 from .ai import Model
 from .documents import build_letter, build_resume, main_tex, validate_edits
+from .match import match_report
 from .security import company_credential, public_url
 from .store import now, package_hash, submission_block
 
@@ -45,6 +46,17 @@ STAGES = {"research": ["Reading posting", "Analyzing requirements"],
           "autonomous": ["Checking tracker", "Opening browser", "Reading posting", "Tailoring resume",
                          "Filling application", "Final review", "Submitting"]}
 
+VOICE = """Voice for anything written in the candidate's name: like a real person explaining something to a smart friend
+over coffee. Professional but natural; clear, direct, conversational. No buzzwords, no corporate jargon, no em dashes,
+never a press-release tone."""
+
+
+def plain(text):
+    """Generated prose without em or en dashes between words (the candidate never writes them); ranges like 2019-2021 stay."""
+    text = re.sub(r"(?<=[A-Za-z,.!?)])\s*—\s*(?=[A-Za-z(])", ", ", str(text or ""))
+    return re.sub(r"(?<=[A-Za-z,.!?)]) – (?=[A-Za-z(])", ", ", text)
+
+
 TAILOR_TASK = """Tailor the resume's TECHNICAL SKILLS section to this job. Return JSON:
 categories: array of {name, items} covering every skill from the profile that is relevant to the posting, grouped
   under short category names in the resume's style (e.g. Programming/Software, Embedded Systems, Design/Fabrication,
@@ -60,7 +72,8 @@ Never fabricate facts or add unsupported skills."""
 QUESTIONS_TASK = """List the questions this application is likely to ask beyond the resume (eligibility, availability,
 start date, relocation, sponsorship, salary, why this company, short essays) and answer each from the profile.
 Return JSON: questions (array of {question, answer, confidence: high|medium|low}). Use "" for an answer the
-profile cannot support and say what is missing in the answer field prefixed with "NEEDS: ". At most 10."""
+profile cannot support and say what is missing in the answer field prefixed with "NEEDS: ". At most 10.
+""" + VOICE
 
 COMPANY_TASK = """Summarize this employer for a candidate preparing an application. Return JSON: summary (3 sentences),
 products (array of short strings), hq (string), size (string, e.g. "~5,000 employees" or ""), website (string),
@@ -104,7 +117,8 @@ belongs in the profile. Only facts the document states; never infer eligibility,
 availability. Do not repeat anything the current profile already contains. Return {} additions if nothing is new."""
 
 STAGES = {**STAGES, "ingest": ["Reading document", "Comparing with profile"],
-          "contacts": ["Searching the web", "Reading LinkedIn", "Ranking contacts"]}
+          "networking:research": ["Reading profiles", "Recording evidence"],
+          "networking:drafts": ["Writing drafts", "Checking drafts"]}
 
 
 class Workflow:
@@ -159,21 +173,27 @@ class Workflow:
         return {"doc_id": doc["id"], "doc_name": doc["name"], "additions": additions, "identity": identity,
                 "conflicts": conflicts, "changes": changed, "preview": preview, "at": now()}
 
-    def start_contacts(self, job_ids, description):
-        from .contacts import ContactFinder
-        key = "contacts:" + now()
-        if any(k.startswith("contacts:") and not t.done() for k, t in self.tasks.items()):
-            raise ValueError("A contact search is already running.")
-        finder = ContactFinder(self.store, self.browser, self.progress, self.stage, self.detail)
-        stages = STAGES["contacts"]
-        self.progress[key] = {"operation": "contacts", "stages": stages, "stage": stages[0], "stage_index": 0,
+    def start_networking(self, operation, ids=None):
+        """Background networking run: `research` reads sources and records evidence, `drafts` writes first messages
+        for review. One networking run at a time; the Stop button cancels it."""
+        from .networking import Networking
+        key = "networking:" + operation
+        if key not in STAGES:
+            raise ValueError("Unknown networking operation.")
+        if any(k.startswith("networking:") and not t.done() for k, t in self.tasks.items()):
+            raise ValueError("A networking run is already in progress.")
+        networking = Networking(self.store, self.browser, self)
+        stages = STAGES[key]
+        self.progress[key] = {"operation": "networking", "stages": stages, "stage": stages[0], "stage_index": 0,
                               "detail": "", "step": None, "model": None, "started": now(), "stage_started": now()}
 
         async def run():
             try:
-                await finder.find(key, job_ids, description)
+                await (networking.research if operation == "research" else networking.drafts)(key, ids)
+            except asyncio.CancelledError:
+                self.store.event(None, "Networking run stopped. Finished people are kept; the rest stay as they were.")
             except Exception as exc:
-                self.store.event(None, f"Contact search stopped: {str(exc)[:200]}")
+                self.store.event(None, f"Networking run stopped: {str(exc)[:200]}")
             finally:
                 self.progress.pop(key, None)
         self.tasks[key] = asyncio.create_task(run())
@@ -290,7 +310,13 @@ class Workflow:
         resume = await build_resume(self.store, jid, [i for c in categories for i in c["items"]] or profiledoc.skills_list(profile),
                                     categories=categories, edits=edits)
         selected = [i for c in (resume.get("categories") or categories) for i in c["items"]]
-        return {"resume": resume, "selected_skills": selected, "categories": resume.get("categories") or categories,
+        settings = self.store.settings()
+        match = None
+        if settings.get("match_enabled", True):
+            self.detail(jid, "Scoring the tailored resume against the posting (HackerRank rubric + keyword coverage)")
+            match = await match_report(model, self.store, resume, job.get("requirements") or [], profiledoc.identity(profile),
+                                       previous=(job.get("package") or {}).get("match"), github=settings.get("match_github", True))
+        return {"resume": resume, "match": match, "selected_skills": selected, "categories": resume.get("categories") or categories,
                 "tailoring_summary": str(proposal.get("tailoring_summary") or "Skills selected for relevance."),
                 "suggested_edits": edits_ok, "accepted_edits": edits or [], "profile_version": meta["version"]}
 
@@ -344,10 +370,11 @@ class Workflow:
             template = next((d for d in self.store.documents() if d["kind"] == "cover_template"), None)
             found = await model.json("""Draft a cover letter for this job (3-4 short paragraphs, plain text, no placeholders).
             Use only facts from the profile; do not invent personal connections or company facts beyond the research given.
-            Follow the template's structure and tone when one is given. Return {"letter": "..."}.""",
+            Follow the template's structure and tone when one is given. Return {"letter": "..."}.
+            """ + VOICE,
                                      {"template": (template or {}).get("text", "")},
                                      stable={"profile": profile, "job": job["description"], "company": company.get("research") or {}})
-            letter = str(found.get("letter") or "")
+            letter = plain(found.get("letter") or "")
             package["letter"] = letter
             package["letter_hash"] = hashlib.sha256(letter.encode()).hexdigest()
             package["letter_pdf"] = await build_letter(self.store, jid, letter, profiledoc.identity(profile), letter_date()) if letter else None
@@ -518,10 +545,11 @@ class Workflow:
                     self.detail(jid, "Drafting the cover letter")
                     letter = await model.json("""Draft a cover letter using the supplied template's structure and tone.
                     Use only verified experience; do not invent personal connections or company facts.
-                    Return {"letter": "plain text letter"}. No Markdown or LaTeX.""",
+                    Return {"letter": "plain text letter"}. No Markdown or LaTeX.
+                    """ + VOICE,
                                               {"template": template["text"]},
                                               stable={"profile": profile, "job": job["description"]})
-                    package["letter"] = str(letter.get("letter", ""))
+                    package["letter"] = plain(letter.get("letter", ""))
                     package["letter_hash"] = hashlib.sha256(package["letter"].encode()).hexdigest()
                     package["letter_pdf"] = await build_letter(self.store, jid, package["letter"], profiledoc.identity(profile), letter_date())
                 else:
@@ -639,7 +667,7 @@ class Workflow:
         for key, task in list(self.tasks.items()):
             if task.done():
                 continue
-            if not key.startswith(("ingest:", "contacts:")):
+            if not key.startswith(("ingest:", "networking:")):
                 try:
                     if self.store.job(key)["status"] == "submitting":
                         continue

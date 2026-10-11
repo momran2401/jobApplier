@@ -9,7 +9,7 @@
 JobApplier keeps one master profile about you, reads job postings you give it, tailors your resume's skills
 section to each role (one page, always), drafts cover letters when a posting asks for one, fills application
 forms in its own Chrome window, and submits only after you approve. It tracks every application in a Google
-Sheet, watches your inbox for employer replies, and finds referral contacts for the jobs you choose.
+Sheet, watches your inbox for employer replies, and builds a networking list with evidence-backed first-message drafts you send yourself.
 
 Everything stays local: your data in `data/`, passwords and the sheet link in your Mac's Keychain. The AI runs
 through your ChatGPT Plus login (Codex), a Claude API key, or a local model with Ollama.
@@ -44,10 +44,13 @@ Opens http://127.0.0.1:8765. `jobapplier stop` stops it. Keep the server private
    - **Advisor**: tailored skills (Overleaf text + PDF), cover letter, likely questions. You apply yourself.
    - **AI Applier**: fills the form and stops at Review. You approve; it submits.
    - **Autonomous**: submits without review; parks anything uncertain for you. Skills only, daily cap.
+   Every tailored resume gets a **Match** report: HackerRank's open-source resume rubric plus requirement coverage.
 4. **Questions** on the Dashboard — answer what the assistant can't infer (sign-in method per company,
    eligibility questions). Answers are saved to your profile and reused.
-5. **Tracker** mode — **Log application** for jobs you applied to yourself; **Find contacts** for referral
-   leads; the mail icon checks your inbox for replies and flags what needs action.
+5. **Tracker** mode — **Log application** for jobs you applied to yourself; the mail icon checks your inbox
+   for replies and flags what needs action.
+6. **Networking** — import your LinkedIn Connections.csv or paste profile links, research people with a source
+   behind every claim, and get first-message drafts (one real question, no pitch) that you review and send yourself.
 
 The full guide is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md). Tests: `.venv/bin/python -m pytest -q`.
 

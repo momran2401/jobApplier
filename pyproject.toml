@@ -19,6 +19,9 @@ dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11"]
 [tool.setuptools.packages.find]
 include = ["jobapplier*"]
 
+[tool.setuptools.package-data]
+jobapplier = ["rubrics/**/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

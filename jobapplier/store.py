@@ -37,7 +37,7 @@ DEFAULT_SETTINGS = {
     "max_model_calls": 35, "max_output_tokens": 4000,
     "sheet_sync_enabled": False, "browser_channel": "chrome",
     "tex_main": "", "skills_start": "", "skills_end": "",
-    "always_letter": False, "default_mode": "assisted",
+    "always_letter": False, "default_mode": "assisted", "match_enabled": True, "match_github": True,
     "autonomous_daily_cap": 10, "autonomous_delay_minutes": 5,
     "monitor_minutes": 0, "text_phone": "", "text_gateway": "tmomail.net", "text_kinds": ["interview", "action_required", "offer"],
     "quiet_from": 22, "quiet_to": 8,
@@ -59,6 +59,7 @@ class Store:
                  at TEXT NOT NULL, message TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS people (id TEXT PRIMARY KEY, data TEXT NOT NULL);
             """)
         os.chmod(self.path, 0o600)
         (self.root / "profile" / "history").mkdir(parents=True, exist_ok=True)
@@ -206,6 +207,34 @@ class Store:
             raise KeyError("Question not found")
         self.save_company(company)
         return company
+
+    # ---- networking list ----
+    def people(self):
+        with self.connection() as c:
+            rows = c.execute("SELECT data FROM people ORDER BY rowid").fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def person(self, pid):
+        with self.connection() as c:
+            row = c.execute("SELECT data FROM people WHERE id=?", (pid,)).fetchone()
+        if not row:
+            raise KeyError("Person not found")
+        return json.loads(row[0])
+
+    def save_person(self, person):
+        with self.connection() as c:
+            c.execute("INSERT OR REPLACE INTO people VALUES (?,?)", (person["id"], json.dumps(person)))
+        return person
+
+    def delete_person(self, pid):
+        with self.connection() as c:
+            c.execute("DELETE FROM people WHERE id=?", (pid,))
+
+    def new_person_id(self):
+        """person-001, person-002, ... — a counter that never reuses an ID, so IDs stay stable across reruns and deletions."""
+        seq = int(self.get("person_seq", 0)) + 1
+        self.set("person_seq", seq)
+        return f"person-{seq:03d}"
 
     @contextmanager
     def connection(self):
