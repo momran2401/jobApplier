@@ -1065,6 +1065,7 @@ def test_sync_folds_the_same_company_created_on_both_macs_and_backs_up_first(tmp
     sa.push()
     sb.pull()
     assert len(b.companies()) == 1 and len(list((b.root / "backups").iterdir())) == 1  # one backup per new Mac
+<<<<<<< HEAD
 
 
 def test_route_fragments_and_exact_links_keep_different_jobs_apart(store):
@@ -1148,3 +1149,5 @@ def test_sync_settles_and_carries_documents(tmp_path):
     sa.pull()
     sb.pull()
     assert (a.events(), b.events()) == before
+=======
+>>>>>>> 7b4051d (JobApplier)
