@@ -26,6 +26,7 @@ DEFAULT_FOLDER = "~/Library/Mobile Documents/com~apple~CloudDocs/JobApplier Sync
 # kv keys that describe this machine only, or that the sync itself maintains.
 LOCAL_KV = {"last_inference", "usage", "sync_state", "tombstones", "kv_times", "profile_meta", "company_map"}  # profile_meta travels with the profile text
 FILE_DIRS = ("documents", "artifacts", "logos")
+LOCAL_EVENTS = ("Synced ", "Backed up the workspace")  # about this Mac's sync, not about your search
 MAX_FILE = 25 * 1024 * 1024
 
 
@@ -133,6 +134,7 @@ class Sync:
             kv[key] = {"value": value, "updated_at": kv_times.get(key, "")}
         meta = self.store.get("profile_meta", {})
         return {"format": FORMAT, "machine": self.machine(), "written_at": now(),
+                "documents": self.store.documents(),
                 "jobs": self.store.jobs(), "companies": self.store.companies(), "people": self.store.people(), "kv": kv,
                 "events": self.store.events_all(limit=500), "tombstones": self.store.get("tombstones", {}),
                 "profile": {"text": self.store.profile_text(), "updated_at": meta.get("updated_at") or "", "verified": bool(meta.get("verified"))},
@@ -232,6 +234,14 @@ class Sync:
             if blob.is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 write_atomic(target, decrypt(key, blob.read_bytes()))
+        local_docs = store.documents()
+        have = {d["id"] for d in local_docs} | {d.get("sha256") for d in local_docs if d.get("sha256")}
+        for doc in reversed(snap.get("documents", [])):  # oldest first, so the list keeps its order
+            if doc["id"] in have or (doc.get("sha256") and doc["sha256"] in have):
+                continue  # already here, or the same file uploaded on both Macs
+            if (store.root / doc["path"]).is_file():
+                store.save_document(doc)
+                changed += 1
         mapping = self.match_companies(snap.get("companies", []))
         local_companies = {c["id"]: c for c in store.companies()}
         for company in snap.get("companies", []):
@@ -247,12 +257,12 @@ class Sync:
                 asked = {q["question"].strip().lower() for q in mine.get("questions") or []}
                 merged["questions"] = (mine.get("questions") or []) + [q for q in company.get("questions") or [] if q["question"].strip().lower() not in asked]
                 if merged != mine:
-                    store.save_company({**merged, "updated_at": max(mine.get("updated_at", ""), company.get("updated_at", ""))})
+                    store.save_company({**merged, "updated_at": max(mine.get("updated_at", ""), company.get("updated_at", ""))}, touch=False)
                     changed += 1
                 continue
             mine = local_companies.get(company["id"])
             if mine is None or company.get("updated_at", "") > mine.get("updated_at", ""):
-                store.save_company({**company, "updated_at": company.get("updated_at", now())})
+                store.save_company({**company, "updated_at": company.get("updated_at") or now()}, touch=False)
                 changed += 1
         tombstones = {**store.get("tombstones", {}), **snap.get("tombstones", {})}
         local_jobs = {j["id"]: j for j in store.jobs()}
@@ -318,8 +328,8 @@ class Sync:
                 changed += 1
             store.set("profile_meta", {**store.get("profile_meta", {}), "updated_at": profile["updated_at"], "verified": bool(profile.get("verified"))})
         for e in snap.get("events", []):
-            if store.add_event_if_missing(e["at"], e.get("job_id"), e["message"]):
-                changed += 1
+            if not e["message"].startswith(LOCAL_EVENTS):
+                store.add_event_if_missing(e["at"], e.get("job_id"), e["message"])
         if changed:
             store.event(None, f"Synced {changed} change(s) from {snap['machine']['name']}.")
         return changed

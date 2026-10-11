@@ -1114,3 +1114,37 @@ def test_sync_carries_job_deletions(tmp_path):
     sa.push()
     sb.pull()
     assert b.jobs() == []  # does not come back
+
+
+def test_sync_settles_and_carries_documents(tmp_path):
+    from jobapplier.documents import save_upload
+    from jobapplier.sync import Sync
+    folder = tmp_path / "icloud"
+    a, b = Store(tmp_path / "a"), Store(tmp_path / "b")
+    for st in (a, b):
+        st.set("settings", {**st.settings(), "sync_enabled": True, "sync_folder": str(folder)})
+    sa, sb = Sync(a, lambda: "pw"), Sync(b, lambda: "pw")
+    doc = save_upload(a, "notes.txt", "supporting", b"Built a radar front end.")
+    save_upload(b, "notes copy.txt", "supporting", b"Built a radar front end.")  # same file uploaded on both
+    job, _ = a.add_job("https://job-boards.greenhouse.io/acme/jobs/1")
+    a.update(job["id"], {"company": "Acme"}, invalidate=False)
+    a.link_job_company(job["id"])
+    sa.push()
+    sb.pull()
+    assert len(b.documents()) == 1  # same content, not listed twice
+    c = Store(tmp_path / "c")
+    c.set("settings", {**c.settings(), "sync_enabled": True, "sync_folder": str(folder)})
+    sc = Sync(c, lambda: "pw")
+    sc.pull()
+    assert [d["id"] for d in c.documents()] == [doc["id"]] and (c.root / doc["path"]).read_bytes() == b"Built a radar front end."
+    # After one round each way, nothing keeps bouncing between the Macs.
+    for _ in range(3):
+        sb.push()
+        sa.pull()
+        sa.push()
+        sb.pull()
+    before = (a.events(), b.events())
+    assert sb.push() is False and sa.push() is False
+    sa.pull()
+    sb.pull()
+    assert (a.events(), b.events()) == before

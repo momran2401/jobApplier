@@ -122,8 +122,10 @@ class Store:
             raise KeyError("Company not found")
         return json.loads(row[0])
 
-    def save_company(self, company):
-        company["updated_at"] = now()
+    def save_company(self, company, touch=True):
+        """`touch=False` keeps the record's own updated_at (sync stores the other Mac's edit time as-is)."""
+        if touch or not company.get("updated_at"):
+            company["updated_at"] = now()
         with self.connection() as c:
             c.execute("INSERT OR REPLACE INTO companies VALUES (?,?)", (company["id"], json.dumps(company)))
         return company
