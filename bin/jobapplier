@@ -1,17 +1,38 @@
 #!/bin/zsh
-# One command to run JobApplier: sets up what's missing, starts the server, opens the dashboard.
-#   jobapplier          start (or reuse a running server) and open http://127.0.0.1:8765
+# Start JobApplier, installing the project-local prerequisites on first run.
+#   jobapplier          start (or reuse a running server) and open the dashboard
 #   jobapplier stop     stop the running server
 set -e
-ROOT="${0:A:h:h}"
+
+SCRIPT="${0:A}"
+while [[ -L "$SCRIPT" ]]; do
+  TARGET="$(readlink "$SCRIPT")"
+  [[ "$TARGET" = /* ]] || TARGET="${SCRIPT:h}/$TARGET"
+  SCRIPT="${TARGET:A}"
+done
+ROOT="${SCRIPT:h:h}"
 cd "$ROOT"
+
 URL="http://127.0.0.1:8765"
+NODE_VERSION="v24.16.0"
+LOCAL_NODE="$ROOT/.tools/node/bin/node"
+LOCAL_NPM="$ROOT/.tools/node/bin/npm"
 
-running() { curl -s -m 1 -o /dev/null "$URL/api/bootstrap"; }
+die() {
+  print -u2 -- "JobApplier setup failed: $1"
+  exit 1
+}
 
-if [[ "$1" == "stop" ]]; then
+running() { curl -fsS -m 1 -o /dev/null "$URL/api/bootstrap"; }
+
+if [[ "${1:-}" == "stop" ]]; then
   pids=$(lsof -t -iTCP:8765 -sTCP:LISTEN 2>/dev/null || true)
-  if [[ -n "$pids" ]]; then kill $pids && echo "JobApplier stopped."; else echo "JobApplier is not running."; fi
+  if [[ -n "$pids" ]]; then
+    kill $pids
+    echo "JobApplier stopped."
+  else
+    echo "JobApplier is not running."
+  fi
   exit 0
 fi
 
@@ -21,16 +42,78 @@ if running; then
   exit 0
 fi
 
-if [[ ! -x .venv/bin/python ]]; then
-  echo "Creating the Python environment..."
-  python3 -m venv .venv
-  .venv/bin/python -m pip install -q --upgrade pip
-  .venv/bin/python -m pip install -q -e ".[dev]"
-  .venv/bin/python -m playwright install chromium >/dev/null 2>&1 || true
+PYTHON="$(command -v python3 || true)"
+[[ -n "$PYTHON" ]] || die "Python 3.11 or later is required. Install it from https://www.python.org/downloads/."
+"$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' || \
+  die "Python 3.11 or later is required (found $($PYTHON --version))."
+
+node_is_supported() {
+  local version major
+  version="$($1 --version 2>/dev/null || true)"
+  major="${version#v}"
+  major="${major%%.*}"
+  [[ "$major" == <-> && "$major" -ge 18 ]]
+}
+
+install_local_node() {
+  local arch archive temp expected actual
+  case "$(uname -m)" in
+    arm64) arch="arm64" ;;
+    x86_64) arch="x64" ;;
+    *) die "Unsupported Mac architecture: $(uname -m)." ;;
+  esac
+  command -v curl >/dev/null 2>&1 || die "curl is required to download Node.js."
+  command -v shasum >/dev/null 2>&1 || die "shasum is required to verify the Node.js download."
+
+  archive="node-${NODE_VERSION}-darwin-${arch}.tar.gz"
+  temp="$(mktemp -d "${TMPDIR:-/tmp}/jobapplier-node.XXXXXX")"
+  trap 'rm -rf "$temp"' EXIT
+  echo "Installing Node.js $NODE_VERSION for this project..."
+  curl --fail --location --retry 3 --output "$temp/$archive" \
+    "https://nodejs.org/dist/$NODE_VERSION/$archive" || die "Could not download Node.js. Check your internet connection."
+  curl --fail --location --retry 3 --output "$temp/SHASUMS256.txt" \
+    "https://nodejs.org/dist/$NODE_VERSION/SHASUMS256.txt" || die "Could not download Node.js checksums."
+  expected="$(awk -v file="$archive" '$2 == file { print $1 }' "$temp/SHASUMS256.txt")"
+  actual="$(shasum -a 256 "$temp/$archive" | awk '{ print $1 }')"
+  [[ -n "$expected" && "$expected" == "$actual" ]] || die "Node.js download failed checksum verification."
+  tar -xzf "$temp/$archive" -C "$temp" || die "Could not unpack Node.js."
+  mkdir -p "$ROOT/.tools"
+  [[ ! -e "$ROOT/.tools/node" ]] || die "Found an incomplete local Node.js installation at $ROOT/.tools/node; remove it and run jobapplier again."
+  mv "$temp/node-${NODE_VERSION}-darwin-${arch}" "$ROOT/.tools/node"
+  trap - EXIT
+  rm -rf "$temp"
+}
+
+if [[ -x "$LOCAL_NODE" && -x "$LOCAL_NPM" ]] && node_is_supported "$LOCAL_NODE"; then
+  NPM="$LOCAL_NPM"
+  export PATH="$ROOT/.tools/node/bin:$PATH"
+elif command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && node_is_supported "$(command -v node)"; then
+  NPM="$(command -v npm)"
+else
+  install_local_node
+  NPM="$LOCAL_NPM"
+  export PATH="$ROOT/.tools/node/bin:$PATH"
 fi
-if [[ ! -f frontend/dist/index.html ]]; then
+
+if [[ ! -x .venv/bin/python || ! -f .venv/.jobapplier-deps || pyproject.toml -nt .venv/.jobapplier-deps ]]; then
+  echo "Installing Python dependencies..."
+  [[ -x .venv/bin/python ]] || "$PYTHON" -m venv .venv
+  .venv/bin/python -m pip install --disable-pip-version-check --upgrade pip
+  .venv/bin/python -m pip install --disable-pip-version-check -e ".[dev]"
+  .venv/bin/python -m playwright install chromium
+  touch .venv/.jobapplier-deps
+fi
+
+dashboard_needs_build() {
+  [[ ! -f frontend/dist/index.html ]] && return 0
+  [[ frontend/package.json -nt frontend/dist/index.html ]] && return 0
+  [[ frontend/package-lock.json -nt frontend/dist/index.html ]] && return 0
+  [[ -n "$(find frontend/src -type f -newer frontend/dist/index.html -print -quit)" ]]
+}
+
+if dashboard_needs_build; then
   echo "Building the dashboard..."
-  (cd frontend && npm install --silent && npm run build --silent)
+  (cd frontend && "$NPM" ci --no-audit --no-fund && "$NPM" run build)
 fi
 
 echo "JobApplier: $URL  (Control-C stops it; \`jobapplier stop\` from another terminal also works)"

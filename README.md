@@ -16,13 +16,21 @@ through your ChatGPT Plus login (Codex), a Claude API key, or a local model with
 
 ## Install
 
-Requires macOS, Python 3.11+, Node 18+, Google Chrome, and [Tectonic](https://tectonic-typesetting.github.io) for
-LaTeX resumes (`brew install tectonic`). Optional: [Ollama](https://ollama.com) for the local fallback model,
+Requires macOS and Python 3.11+. The launcher downloads a project-local Node.js runtime and browser automation
+runtime on first start, so it does not require Homebrew or a system-wide Node installation. [Tectonic](https://tectonic-typesetting.github.io)
+is required for LaTeX resumes (`brew install tectonic`). Optional: [Ollama](https://ollama.com) for the local fallback model,
 [Codex CLI](https://github.com/openai/codex) for the ChatGPT login (`brew install codex && codex login`).
 
 ```bash
 git clone https://github.com/momran2401/jobapplier.git JobApplier && cd JobApplier
-ln -s "$PWD/bin/jobapplier" /opt/homebrew/bin/jobapplier   # one-command launcher
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$PWD/bin/jobapplier" "$HOME/.local/bin/jobapplier"
+```
+
+If `jobapplier` is not found afterwards, add this line to `~/.zprofile`, open a new terminal, and run it again:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ## Run
