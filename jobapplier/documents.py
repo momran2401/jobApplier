@@ -168,6 +168,9 @@ async def compile_tex(directory, main):
         proc.kill()
         await proc.wait()
         raise ValueError("Resume compilation timed out.") from None
+    except asyncio.CancelledError:
+        proc.kill()
+        raise
     if proc.returncode:
         raise ValueError("LaTeX compilation failed. Check the source and dependencies. " + output.decode(errors="replace")[-1200:])
     pdf = path.with_suffix(".pdf")

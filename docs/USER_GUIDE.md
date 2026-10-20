@@ -78,6 +78,23 @@ Every tailored resume (Advisor, AI Applier, Autonomous) gets a **Match** tab in 
 
 Settings → Applying turns the score and the GitHub lookup on or off. The score never blocks anything.
 
+## Fit score, skill gaps, knock-out questions, follow-ups
+
+- **Fit**: each posting is graded 1 to 5 with Apply / Consider / Skip when it is read, before any tailoring. The
+  requirements are rated for importance from the posting before your profile is read, and an inferred importance
+  is never critical or high. Hard stops become fit flags. Autonomous parks jobs under the threshold in Settings.
+- **Skill gaps**: skills the posting wants that your Skills section does not list are reported (in your profile
+  elsewhere, or missing entirely), never added for you.
+- **Knock-out questions**: forms are scanned before filling for years-of-experience, degree, sponsorship and
+  salary questions. One without an answer in your profile pauses the job with the question on the Dashboard.
+- **Follow-ups** (Tracker mode): due a week after applying and a week after that, within a day when the employer
+  writes. Draft, send it yourself, click "I sent this".
+- **Email matching**: a rejection or offer changes a status only when the email clearly matches that role;
+  otherwise you confirm it under Action required.
+- **Companies**: your history with each employer (responded, silent, mixed), a do-not-apply checkbox that
+  blocks preparation there, and a cooldown reminder before applying to the same company again.
+- **Voice**: letters, answers and drafts are checked for machine-sounding writing; what remains is flagged.
+
 ## Email monitor
 
 The mail icon in the top bar reads recent replies from employers in the Gmail account that owns your tracker

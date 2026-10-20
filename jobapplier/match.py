@@ -124,23 +124,86 @@ def validate(role, found):
 
 
 # ---- keyword coverage (deterministic) ----
+# Spellings that mean the same thing to a recruiter's search (after career-ops' keyword-match, MIT). A requirement
+# term counts as present when any form in its group appears, and only on a word boundary: "java" never matches
+# "javascript", "c" never matches "c++".
+VARIANTS = [{"javascript", "js", "ecmascript"}, {"typescript", "ts"}, {"c++", "cpp", "c plus plus"}, {"c#", "csharp", "c sharp"},
+            {"node.js", "nodejs", "node"}, {"react.js", "reactjs", "react"}, {"vue.js", "vuejs", "vue"}, {"next.js", "nextjs"},
+            {"postgresql", "postgres", "psql"}, {"kubernetes", "k8s"}, {"ci/cd", "ci cd", "cicd", "continuous integration", "continuous delivery"},
+            {"machine learning", "ml"}, {"artificial intelligence", "ai"}, {"amazon web services", "aws"}, {"google cloud", "gcp", "google cloud platform"},
+            {"microsoft azure", "azure"}, {"matlab", "simulink"}, {"solidworks", "solid works"}, {"printed circuit board", "pcb", "pcbs"},
+            {"field-programmable gate array", "fpga", "fpgas"}, {"verilog", "systemverilog", "system verilog"}, {"vhdl"}, {"rtos", "real-time operating system"},
+            {"linux", "unix"}, {"git", "github", "gitlab", "version control"}, {"rest", "restful", "rest api", "rest apis"}, {"sql", "mysql", "sqlite"},
+            {"tensorflow", "tf"}, {"pytorch", "torch"}, {"scikit-learn", "sklearn", "scikit learn"}, {"opencv", "computer vision"},
+            {"user experience", "ux"}, {"user interface", "ui"}, {"object-oriented", "object oriented", "oop"}, {"data structures", "data structure"},
+            {"algorithms", "algorithm"}, {"microcontroller", "microcontrollers", "mcu", "mcus"}, {"embedded", "embedded systems", "embedded system"},
+            {"signal processing", "dsp", "digital signal processing"}, {"cad", "computer-aided design", "computer aided design"},
+            {"internship", "intern", "co-op", "coop"}, {"bachelor's", "bachelors", "bachelor", "bs", "b.s.", "undergraduate"}]
+_GROUP = {form: group for group in VARIANTS for form in group}
+
+
+def variants(term):
+    """Every spelling that counts as this term, including a plural or singular form."""
+    term = term.lower().strip()
+    forms = set(_GROUP.get(term, {term}))
+    for f in list(forms):
+        if f.endswith("s") and len(f) > 3:
+            forms.add(f[:-1])
+        elif f.isalpha():
+            forms.add(f + "s")
+    return forms
+
+
+def present(term, text):
+    """Boundary-aware: the term (or a variant) appears as a whole token in `text`, which is lowercased."""
+    for form in variants(term):
+        if re.search(r"(?<![a-z0-9+#])" + re.escape(form) + r"(?![a-z0-9+#])", text):
+            return True
+    return False
+
+
 def terms(text):
-    return [t for t in re.findall(r"[a-z0-9+#.]+", text.lower()) if len(t.strip(".")) >= 2 and t not in STOPWORDS]
+    return [t for t in re.findall(r"[a-z0-9+#./-]+", text.lower()) if len(t.strip("./-")) >= 2 and t.strip("./-") not in STOPWORDS]
 
 
 def coverage(requirements, resume_text):
-    """Which posting requirements the resume text mentions: a requirement counts as covered when at least half of
-    its meaningful terms appear in the resume (any order). Pure string matching, so it is repeatable."""
-    haystack = " " + re.sub(r"\s+", " ", resume_text.lower()) + " "
+    """Which posting requirements the resume text mentions. Pure string matching, so it is repeatable: every term
+    (or a known variant) on a word boundary = present; at least half = thin; fewer = missing. `covered` is true for
+    present and thin, as before; `level` says which."""
+    haystack = re.sub(r"\s+", " ", resume_text.lower())
     rows = []
     for req in requirements or []:
         words = list(dict.fromkeys(terms(str(req))))
         if not words:
             continue
-        missing = [w for w in words if w not in haystack]
-        rows.append({"text": str(req), "covered": len(missing) <= len(words) // 2, "missing": missing})
+        missing = [w for w in words if not present(w, haystack)]
+        level = "present" if not missing else "thin" if len(missing) <= len(words) // 2 else "missing"
+        rows.append({"text": str(req), "covered": level != "missing", "level": level, "missing": missing})
     covered = sum(1 for r in rows if r["covered"])
-    return {"requirements": rows, "covered": covered, "total": len(rows), "percent": round(100 * covered / len(rows)) if rows else None}
+    return {"requirements": rows, "covered": covered, "total": len(rows), "percent": round(100 * covered / len(rows)) if rows else None,
+            "present": sum(1 for r in rows if r["level"] == "present"), "thin": sum(1 for r in rows if r["level"] == "thin")}
+
+
+def skill_gaps(wanted, profile_skills, profile_text):
+    """Classify the skills a tailoring pass wanted to show against the profile (after career-ops' jd-skill-gap, MIT):
+    `supported` is in the Skills section (and goes in the resume), `in_profile` appears elsewhere in the profile
+    text but not under Skills (add it there to use it), `gap` has no trace in the profile at all."""
+    known = {s.lower() for s in profile_skills}
+    text = profile_text.lower()
+    out = {"supported": [], "in_profile": [], "gap": []}
+    for item in wanted:
+        key = item.lower().strip()
+        if not key:
+            continue
+        if key in known or any(key in k or k in key for k in known if len(k) > 2):
+            bucket = "supported"
+        elif present(key, text):
+            bucket = "in_profile"
+        else:
+            bucket = "gap"
+        if item not in out[bucket]:
+            out[bucket].append(item)
+    return out
 
 
 # ---- GitHub signals (public API, no token) ----

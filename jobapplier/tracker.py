@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import followups
 from .security import save_secret, secret
 from .store import canonical_url, now
 
@@ -27,6 +28,7 @@ FIELDS = {
     "contact_profile_url": "Contact profile URL", "outreach_status": "Outreach status",
     "last_contact_at": "Last contact", "followup_at": "Follow-up date",
     "mode": "Mode", "action_required": "Action required", "last_email": "Last email",
+    "fit_score": "Fit score", "fit_decision": "Fit verdict",
 }
 MODE = {"manual": "Applied myself", "advisor": "Advisor", "assisted": "AI Applier", "autonomous": "Autonomous", "": ""}
 STATUS = {"new": "Queued", "preparing": "Preparing", "needs_attention": "Needs attention", "ready": "Ready to review",
@@ -173,7 +175,10 @@ class Tracker:
                  mode=MODE.get(job.get("mode") or "", job.get("mode") or ""),
                  action_required=(job.get("action_required") or {}).get("message", "") if isinstance(job.get("action_required"), dict) else "",
                  last_email=(job.get("last_email") or {}).get("subject", "") if isinstance(job.get("last_email"), dict) else "",
-                 resume_version=((p.get("resume") or {}).get("sha256") or "")[:12])
+                 resume_version=((p.get("resume") or {}).get("sha256") or "")[:12],
+                 fit_score="" if job.get("fit_score") is None else job["fit_score"],
+                 followup_at=job.get("followup_at") or followups.cadence(job)["next_at"],
+                 last_contact_at=job.get("last_contact_at") or max((f.get("at", "")[:10] for f in job.get("follow_ups") or []), default=""))
         return v
 
     async def write_referral(self, job, changes):

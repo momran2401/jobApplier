@@ -1065,7 +1065,6 @@ def test_sync_folds_the_same_company_created_on_both_macs_and_backs_up_first(tmp
     sa.push()
     sb.pull()
     assert len(b.companies()) == 1 and len(list((b.root / "backups").iterdir())) == 1  # one backup per new Mac
-<<<<<<< HEAD
 
 
 def test_route_fragments_and_exact_links_keep_different_jobs_apart(store):
@@ -1149,5 +1148,31 @@ def test_sync_settles_and_carries_documents(tmp_path):
     sa.pull()
     sb.pull()
     assert (a.events(), b.events()) == before
-=======
->>>>>>> 7b4051d (JobApplier)
+
+
+@pytest.mark.asyncio
+async def test_stop_marks_progress_stopping_and_does_not_wait_for_the_sheet(store):
+    """The Stop button must clear the dashboard right away: the entry shows as stopping at once and the
+    tracker-sheet sync that normally follows a run happens in the background, not on the stop path."""
+    class Sheets:
+        calls = 0
+        async def sync(self):
+            Sheets.calls += 1
+            await asyncio.sleep(3600)
+    wf = Workflow(store, type("B", (), {"lock": asyncio.Lock()})(), Sheets())
+    store.set("settings", {**store.settings(), "sheet_sync_enabled": True})
+    job, _ = store.add_job("https://jobs.example.com/slow")
+
+    async def slow(jid):
+        await asyncio.sleep(3600)
+    wf.research = slow
+    wf.start(job["id"], "research")
+    await asyncio.sleep(0)
+    assert job["id"] in wf.progress and not wf.progress[job["id"]].get("stopping")
+    assert wf.stop_all() == 1
+    assert wf.progress[job["id"]]["stopping"] and wf.progress[job["id"]]["detail"] == "Stopping"
+    await asyncio.wait_for(asyncio.gather(wf.tasks[job["id"]], return_exceptions=True), 1)
+    assert job["id"] not in wf.progress
+    assert store.job(job["id"])["status"] == "needs_attention" and "Paused" in store.job(job["id"])["error"]
+    await asyncio.sleep(0)
+    assert Sheets.calls == 1

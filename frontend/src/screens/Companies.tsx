@@ -38,6 +38,9 @@ function CompanyDetail({c, jobs, people, run, busy, openJob, openNetworking}: {c
         <label className="check"><input type="checkbox" checked={!!c.has_account} onChange={e => patch({has_account: e.target.checked})}/>I already have an account here</label>
         <label className="check"><input type="checkbox" checked={!!c.google_signin} onChange={e => patch({google_signin: e.target.checked})}/>Use “Sign in with Google” when offered</label>
       </div>
+      {c.history?.applied > 0 && <p className="small muted">{c.history.applied} application{c.history.applied === 1 ? '' : 's'} here so far, {c.history.label}{c.history.rejections ? `, ${c.history.rejections} rejected` : ''}. New postings on their board are skipped for {c.history.last_applied ? 'your cooldown window' : 'a while'} after an application.</p>}
+      <label className="check"><input type="checkbox" checked={!!c.do_not_apply} onChange={e => patch({do_not_apply: e.target.checked}, e.target.checked ? 'Marked. Preparation here is blocked until you clear it.' : 'Cleared.')}/>Do not apply here (your call; preparation and board checks stop for this company)</label>
+      {c.do_not_apply && <SavedInput label="Reason, for your future self" value={c.do_not_apply_reason || ''} save={v => patch({do_not_apply_reason: v}, 'Saved.')}/>}
     </Panel>
 
     <Panel title={<><KeyRound size={15}/>Saved login</>} sub={c.credential ? 'A password is saved in your Mac’s Keychain for this company. The assistant types it only on this company’s sign-in page; it is never sent to the AI.' : 'Optional. Lets the assistant sign in or create the account for you. Stored in your Mac’s Keychain, never sent to the AI.'}>

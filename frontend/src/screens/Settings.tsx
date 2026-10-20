@@ -4,7 +4,7 @@ import {api, Obj, PanelProps} from '../api';
 import {Button, PageHead, Panel} from '../ui';
 import {Tracker} from './Tracker';
 
-const KEYS = ['default_mode', 'always_letter', 'match_enabled', 'match_github', 'sync_enabled', 'sync_folder', 'sync_minutes', 'discover_keywords', 'autonomous_daily_cap', 'autonomous_delay_minutes', 'monitor_minutes', 'text_phone', 'text_gateway', 'text_kinds', 'quiet_from', 'quiet_to', 'provider', 'model', 'effort', 'fallback_enabled', 'fallback_model', 'fast_model', 'ollama_context', 'ollama_timeout', 'ollama_url',
+const KEYS = ['default_mode', 'always_letter', 'match_enabled', 'match_github', 'fit_enabled', 'fit_threshold', 'reapply_cooldown_days', 'followups_enabled', 'sync_enabled', 'sync_folder', 'sync_minutes', 'discover_keywords', 'autonomous_daily_cap', 'autonomous_delay_minutes', 'monitor_minutes', 'text_phone', 'text_gateway', 'text_kinds', 'quiet_from', 'quiet_to', 'provider', 'model', 'effort', 'fallback_enabled', 'fallback_model', 'fast_model', 'ollama_context', 'ollama_timeout', 'ollama_url',
   'max_model_calls', 'max_output_tokens', 'tex_main', 'skills_start', 'skills_end'];
 
 export function Settings({state, run, busy}: PanelProps) {
@@ -24,6 +24,10 @@ export function Settings({state, run, busy}: PanelProps) {
         <label className="field">Autonomous: wait before submitting (minutes)<input type="number" min={0} max={120} value={s.autonomous_delay_minutes} onChange={e => set('autonomous_delay_minutes', Number(e.target.value))}/></label>
         <label className="check" style={{alignSelf: 'end'}}><input type="checkbox" checked={!!s.always_letter} onChange={e => set('always_letter', e.target.checked)}/>Always draft a cover letter, even if the posting doesn’t mention one</label>
         <label className="field full">New-posting keywords (job boards of companies you track; comma-separated, empty = everything)<input value={s.discover_keywords || ''} onChange={e => set('discover_keywords', e.target.value)}/></label>
+        <label className="check"><input type="checkbox" checked={s.fit_enabled !== false} onChange={e => set('fit_enabled', e.target.checked)}/>Score how well each posting fits you when it is read (1 to 5 with a verdict; one extra AI call per job)</label>
+        <label className="field">Autonomous: park jobs scoring below<input type="number" min={1} max={5} step={0.1} value={s.fit_threshold ?? 3.5} onChange={e => set('fit_threshold', Number(e.target.value))}/></label>
+        <label className="field">Warn before applying to the same company again within (days; 0 = never)<input type="number" min={0} max={365} value={s.reapply_cooldown_days ?? 90} onChange={e => set('reapply_cooldown_days', Number(e.target.value))}/></label>
+        <label className="check" style={{alignSelf: 'end'}}><input type="checkbox" checked={s.followups_enabled !== false} onChange={e => set('followups_enabled', e.target.checked)}/>Track follow-ups and draft them in Tracker mode (you send them yourself)</label>
         <label className="check"><input type="checkbox" checked={!!s.match_enabled} onChange={e => set('match_enabled', e.target.checked)}/>Score each tailored resume (HackerRank's open-source rubric + requirement coverage; one extra AI call)</label>
         <label className="check"><input type="checkbox" checked={!!s.match_github} onChange={e => set('match_github', e.target.checked)}/>Include public GitHub signals from the GitHub link in your profile</label>
       </div>

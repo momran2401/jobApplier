@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import logos
+from . import followups, logos
 from . import profile as profiledoc
 from .ai import local_base, model_list, ollama_models, start_ollama
 from .browser import Browser
@@ -143,8 +143,10 @@ def create_app(data_dir=None):
         for d in docs:
             d["ingested"] = ingested.get(d["id"], {}).get("sha256") == d.get("sha256")
         proposals = [store.get("ingest:" + d["id"]) for d in docs]
-        return {"jobs": store.jobs(), "documents": docs, "profile": store.profile(),
-                "proposals": [p for p in proposals if p], "companies": [public_company(c) for c in store.companies()],
+        jobs = store.jobs()
+        return {"jobs": jobs, "documents": docs, "profile": store.profile(), "followups": followups.board(jobs),
+                "proposals": [p for p in proposals if p],
+                "companies": [{**public_company(c), "history": followups.company_history(c, jobs)} for c in store.companies()],
                 "settings": store.settings(),
                 "tracker": store.get("tracker"), "usage": store.get("usage", {}),
                 "last_inference": store.get("last_inference"), "progress": workflow.progress, "monitor": monitor.state(),
@@ -458,7 +460,7 @@ def create_app(data_dir=None):
         body = await request.json()
         company = store.company(cid)
         allowed = {"name": str, "signin_method": str, "account_email": str, "has_account": bool, "google_signin": bool,
-                   "notes": str, "portal": str, "domain": str}
+                   "notes": str, "portal": str, "domain": str, "do_not_apply": bool, "do_not_apply_reason": str}
         for key, kind in allowed.items():
             if key in body:
                 if not isinstance(body[key], kind):
@@ -523,7 +525,8 @@ def create_app(data_dir=None):
         changes = await request.json()
         allowed = {"provider", "model", "ollama_url", "max_model_calls", "max_output_tokens", "tex_main", "skills_start", "skills_end", "fallback_enabled", "fallback_model", "ollama_context", "ollama_timeout", "effort", "fast_model", "always_letter", "match_enabled", "match_github", "default_mode", "autonomous_daily_cap", "autonomous_delay_minutes",
                    "monitor_minutes", "text_phone", "text_gateway", "text_kinds", "quiet_from", "quiet_to",
-                   "sync_enabled", "sync_folder", "sync_minutes", "discover_keywords"}
+                   "sync_enabled", "sync_folder", "sync_minutes", "discover_keywords",
+                   "fit_enabled", "fit_threshold", "reapply_cooldown_days", "followups_enabled"}
         if set(changes) - allowed:
             raise ValueError("Unknown settings.")
         settings = {**store.settings(), **changes}
@@ -533,8 +536,13 @@ def create_app(data_dir=None):
             raise ValueError("Effort must be low, medium, or high.")
         if settings["default_mode"] not in {"assisted", "advisor", "autonomous"} or not all(isinstance(settings[k], bool) for k in ("always_letter", "match_enabled", "match_github")):
             raise ValueError("Invalid mode settings.")
+        if not isinstance(settings["fit_enabled"], bool) or not isinstance(settings["followups_enabled"], bool):
+            raise ValueError("Fit scoring and follow-ups are on/off switches.")
+        if not isinstance(settings["fit_threshold"], (int, float)) or isinstance(settings["fit_threshold"], bool) or not 1 <= settings["fit_threshold"] <= 5:
+            raise ValueError("The fit threshold is a number between 1 and 5.")
+        settings["fit_threshold"] = round(float(settings["fit_threshold"]), 1)
         for field, low, high in [("autonomous_daily_cap", 1, 50), ("autonomous_delay_minutes", 0, 120), ("monitor_minutes", 0, 240),
-                                 ("quiet_from", 0, 23), ("quiet_to", 0, 23), ("sync_minutes", 1, 60)]:
+                                 ("quiet_from", 0, 23), ("quiet_to", 0, 23), ("sync_minutes", 1, 60), ("reapply_cooldown_days", 0, 365)]:
             if type(settings[field]) is not int or not low <= settings[field] <= high:
                 raise ValueError(f"{field} must be an integer between {low} and {high}.")
         if not isinstance(settings["fallback_enabled"], bool) or not isinstance(settings["fallback_model"], str) or not settings["fallback_model"].strip():
@@ -685,6 +693,48 @@ def create_app(data_dir=None):
     @app.post("/api/jobs/{jid}/action-done")
     async def action_done(jid: str):
         return store.update(jid, {"action_required": None}, invalidate=False)
+
+    @app.post("/api/jobs/{jid}/status-suggestion")
+    async def status_suggestion(jid: str, request: Request):
+        """An email matched the company but not clearly this role: you confirm or dismiss the suggested status."""
+        body = await request.json()
+        job = store.job(jid)
+        suggestion = job.get("status_suggestion")
+        if not suggestion:
+            raise ValueError("Nothing is suggested for this application.")
+        changes = {"status_suggestion": None}
+        if body.get("accept"):
+            changes["status"] = suggestion["status"]
+            store.event(jid, f"You confirmed the email: status set to {suggestion['status']}.")
+        else:
+            store.event(jid, "You dismissed the suggested status change.")
+        job = store.update(jid, changes, invalidate=False)
+        if body.get("accept") and store.settings()["sheet_sync_enabled"]:
+            asyncio.create_task(sheets.sync())
+        return job
+
+    @app.post("/api/jobs/{jid}/followup/draft")
+    async def followup_draft(jid: str):
+        if not store.settings().get("followups_enabled", True):
+            raise ValueError("Follow-ups are turned off in Settings.")
+        workflow.start_followup(jid)
+        return {"started": True}
+
+    @app.post("/api/jobs/{jid}/followup/sent")
+    async def followup_sent(jid: str, request: Request):
+        """Record a follow-up you sent yourself (the app never sends). The next due date moves accordingly."""
+        body = await request.json()
+        job = store.job(jid)
+        text = str(body.get("text") or (job.get("followup_draft") or {}).get("body") or "").strip()[:2500]
+        at = str(body.get("at") or now()[:10])[:10]
+        entry = {"at": at, "channel": str(body.get("channel") or "email")[:40], "text": text}
+        sent = [*(job.get("follow_ups") or []), entry]
+        job = store.update(jid, {"follow_ups": sent, "followup_draft": None, "last_contact_at": at,
+                                 "followup_at": followups.cadence({**job, "follow_ups": sent})["next_at"]}, invalidate=False)
+        store.event(jid, f"Follow-up {len(sent)} recorded as sent on {at}.")
+        if store.settings()["sheet_sync_enabled"]:
+            asyncio.create_task(sheets.sync())
+        return job
 
     @app.get("/api/tracker/script")
     async def tracker_script():

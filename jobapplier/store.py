@@ -47,6 +47,7 @@ DEFAULT_SETTINGS = {
     "discover_keywords": "intern, internship, co-op, new grad, early career",
     "monitor_minutes": 0, "text_phone": "", "text_gateway": "tmomail.net", "text_kinds": ["interview", "action_required", "offer"],
     "quiet_from": 22, "quiet_to": 8,
+    "fit_enabled": True, "fit_threshold": 3.5, "reapply_cooldown_days": 90, "followups_enabled": True,
 }
 
 
@@ -157,7 +158,8 @@ class Store:
         company = {"id": str(uuid.uuid4()), "name": display, "keys": keys, "aliases": [],
                    "domain": "" if shared else host, "portal": portal_from_url(job["url"]), "signin_method": "unknown",
                    "account_email": "", "has_account": False, "google_signin": False, "credential": False,
-                   "questions": [], "notes": "", "research": None, "contacts": [], "created_at": now(), "updated_at": now()}
+                   "questions": [], "notes": "", "research": None, "contacts": [], "do_not_apply": False, "do_not_apply_reason": "",
+                   "created_at": now(), "updated_at": now()}
         return self.save_company(company)
 
     def link_job_company(self, jid):
@@ -332,7 +334,8 @@ class Store:
                    "signin_method": "unknown", "account_email": "", "account_created": False,
                    "portal_url": "", "status_url": "", "requisition_id": "", "location": "",
                    "deadline": "", "posting_kind": "opening", "posting_status": "unverified", "posting_checked_at": "",
-                   "fit_flags": [], "fit_acknowledged": False,
+                   "fit_flags": [], "fit_acknowledged": False, "fit": None, "fit_score": None, "fit_decision": "",
+                   "follow_ups": [], "followup_draft": None, "status_suggestion": None,
                    "created_at": now(), "updated_at": now(), "package": None, "approval": None,
                    "sync_status": "pending", "sync_error": "", "last_sync_at": None,
                    "error": "", "submitted_at": None, "confirmation": "", "description": "",

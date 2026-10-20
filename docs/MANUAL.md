@@ -122,12 +122,36 @@ none of them is blocking: the model gets one rewrite, and a letter that still fa
 pauses with the reason). Capitalized names that appear nowhere are listed as "check these names". No model is
 involved in the check itself, so it cannot be talked around.
 
+**Fit score.** When a posting is read, one extra AI call grades the job against your profile: a score from 1 to
+5, a verdict (Apply at 4.0 and up, Consider from 3.5, Skip below), the requirements that drove it, and any hard
+stops. The model rates how much each requirement matters from the posting before it reads your profile, so a
+gap in the profile cannot quietly demote the requirement, and an importance that is only inferred is never
+critical or high. The score shows as a tag on the row and under the drawer's **Fit** tab, with the gaps an
+interviewer will probe and what you can honestly say. Hard stops land in the fit flags, so they need the same
+**Continue despite flags** as before. Autonomous mode parks jobs below the threshold in Settings (default 3.5).
+It is one reading, not a verdict on you; Settings → Applying turns it off.
+
+**Skill gaps.** Skills the tailoring pass wanted to show but your Skills section does not list are never added
+on their own. They are reported under Materials and Advice in two groups: mentioned elsewhere in your profile
+(add them under Skills and they can go on the resume), and no trace in your profile at all.
+
+**Knock-out questions.** Before a form is filled, every page is scanned for the questions that reject
+automatically: years of experience, a degree, sponsorship or work authorization, a salary floor. One your
+profile has no answer for stops the preparation with the question on the Dashboard; answer it (saved to your
+profile) or decide not to apply. The others are listed under the Answers tab so you can check what will be
+typed. Two kinds are warned about and never answered for you: a salary-history question, and a question about
+immigration status rather than work authorization.
+
+**Voice.** Letters, likely answers, follow-ups and networking drafts pass a plain-language check in code: the
+overused words, the stock openers ("I am excited to apply", "just checking in"), the "not X, but Y" reframe,
+dashes as punctuation. The model gets one rewrite; what remains is shown as "reads like machine writing".
+
 **Posting status.** Read job uses the page's own structured data when the site publishes it (title, company,
 location, deadline). A page that returns 404 or says "no longer accepting applications" marks the job *closed*;
 a past deadline marks it *expired*. Both show as a tag on the row. Autonomous mode refuses those.
 
-**The drawer**, tab by tab: Advice (Advisor output), Overview (summary, requirements, fit flags, referral,
-account details), Materials (the exact PDF, selected skills, what changed, cover letter), Match (next section),
+**The drawer**, tab by tab: Advice (Advisor output), Overview (summary, fit, this employer's history with you,
+follow-up, requirements, fit flags, referral, account details), Fit (the evaluation above), Materials (the exact PDF, selected skills, what changed, cover letter), Match (next section),
 Answers (every value it typed and where it came from, plus the final screenshot), Activity (the log for this
 job).
 
@@ -146,7 +170,9 @@ in code, not by the model. Read it as one reviewer's opinion: it weighs open sou
 resume can move about ten points between runs. The evidence under each bar is the useful part.
 
 **Requirements mentioned.** Which of the posting's requirements the resume text actually contains, by plain
-keyword matching. No AI, repeatable. Missing terms are listed per requirement. Eligibility lines ("must be a
+keyword matching. No AI, repeatable. Known spellings count (JS for JavaScript, k8s for Kubernetes, PyTorch for
+torch), and a term only matches a whole word, so "Java" never matches "JavaScript". A requirement is present
+when every term appears, thin when at least half do, missing otherwise. Missing terms are listed per requirement. Eligibility lines ("must be a
 U.S. person") naturally show as missing; that is fine.
 
 The score never blocks anything. Settings → Applying turns it and the GitHub lookup off.
@@ -159,6 +185,17 @@ it did, the logo, and the people on your networking list there.
 
 The first time it needs to sign in somewhere it asks one question: how do you sign in at this company? Answer
 once; every later application there reuses it.
+
+**This employer and you.** Each company shows how many applications you have sent it and what came back:
+responded before, silent so far (with the days), or mixed. Facts, not a verdict; a quiet inbox is often just a
+busy one.
+
+**Do not apply here.** Your own list. Tick it on a company and preparation there is refused with your reason,
+and its job board is skipped by the new-postings check. Nothing adds a company to it on its own.
+
+**Applying again.** When you read a posting at a company you applied to inside the cooldown window (Settings,
+default 90 days), a fit flag reminds you of the earlier application, because portals keep application history.
+The board check also skips that company's postings during the window.
 
 **Saved login** (optional): an email and password the assistant may type on that company's own sign-in page.
 It is stored in your Mac's Keychain and never sent to the model. It is typed by code, on that company's page
@@ -213,8 +250,21 @@ formulas in the sheet are never overwritten.
 **Email.** The mail icon in the top bar reads recent replies from employers in the Gmail account that owns your
 sheet, through the same script, read-only. Replies are classified (confirmation, rejection, interview,
 assessment, offer, action required), attached to the matching application, and shown under **Action
-required** with a link to the email. Rejections and offers update the status. Settings → Email monitor turns on
-automatic checks and optional texts to your phone, with quiet hours.
+required** with a link to the email. Before the model sees an email, code matches it to your applications by
+sender domain and company name (a short name like HP must stand alone, so PHP never matches), and the model
+chooses among those. A rejection or offer changes the status only when the match is exact: the role words
+match too, or you have one application at that company. Otherwise it appears under Action required as a
+suggestion you confirm or dismiss. Settings → Email monitor turns on automatic checks and optional texts to your
+phone, with quiet hours.
+
+**Follow-ups** (Tracker mode). Every application that is in and waiting gets a cadence: the first follow-up is
+due a week after applying, the next a week after that, and after two with no reply it is marked gone quiet.
+When the employer writes (interview, assessment, something they need), a reply from you is due within a day,
+then every three days. The Dashboard lists what is due; **Draft** writes a 3 to 4 sentence email that names the
+role and the date, one concrete point from your profile for this role, and a soft ask with a time window, never
+"just checking in". A later follow-up takes a new angle. Drafts are fact-checked and voice-checked. You send it
+from your own mail and click **I sent this**; the next date moves and the sheet's Follow-up date and Last
+contact columns are filled. Settings → Applying turns follow-ups off.
 
 **Log application** (Tracker mode): for jobs you applied to yourself. Link, date, how you signed in, referral
 details, optional password for the company (goes to the Keychain). "Store · apply later" keeps a job as *To
@@ -229,7 +279,11 @@ The Dashboard's "New postings at companies you track" panel checks the public jo
 Lever, Ashby) of companies already on your Companies page, filtered by the keywords in Settings (default:
 intern, internship, co-op, new grad, early career). No AI tokens, no scraping. **Add** turns a posting into a
 job in your default mode; **Dismiss** hides it for good. Companies that run their own career site are not
-covered. **Check now** runs it; it does not poll on its own.
+covered. **Check now** runs it; it does not poll on its own. Each check also records what the boards listed,
+and a title that comes back under a new link on a later day within 90 days is tagged **reposted**: the same set
+of title words, a different link, first seen on a different day. Two links first seen the same day are parallel
+openings, not a repost. It can be a re-opened search or an evergreen posting; it is a signal, not a verdict.
+Companies marked do-not-apply, and companies inside your re-apply cooldown, are skipped.
 
 ## 11. Sync between your Macs
 
@@ -262,8 +316,9 @@ it has seen.
 
 ## 12. Settings
 
-- **Applying**: default mode, autonomous cap and delay, always draft a letter, match score on/off, GitHub
-  lookup, new-posting keywords.
+- **Applying**: default mode, autonomous cap and delay, always draft a letter, fit score on/off and the
+  autonomous threshold, re-apply cooldown days, follow-ups on/off, match score on/off, GitHub lookup,
+  new-posting keywords.
 - **Email monitor**: automatic checks, phone number and carrier for texts, quiet hours.
 - **Sync between your Macs**: see above.
 - **AI connection**: provider and model. **Codex** uses your ChatGPT Plus sign-in (run `codex login` once).
@@ -293,7 +348,9 @@ The `data/` folder is in `.gitignore`. Nothing personal is ever committed.
 - Nothing is submitted without your approval, except in Autonomous mode, and then only under its guardrails.
 - Nothing is sent: no messages, no emails, no connection requests. Drafts are for you to send.
 - It never invents facts. Unknown answers are handed to you. Generated text is fact-checked against your
-  sources before it is used.
+  sources before it is used, and checked for machine-sounding writing.
+- Scores and signals (fit, reposts, an employer's silence) inform; they never decide. Your do-not-apply list is
+  yours alone, and an email changes a status only when the match is exact.
 - It never changes your experience wording automatically, and never edits your master resume.
 - Passwords are typed by code on the matching company's sign-in page only, and never shown to the model.
   Verification codes and CAPTCHAs are always yours.

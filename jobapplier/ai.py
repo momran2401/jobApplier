@@ -209,6 +209,9 @@ class Model:
             except asyncio.TimeoutError:
                 proc.kill()
                 raise ValueError(f"Codex took longer than {settings['ollama_timeout']}s. Try again.") from None
+            except asyncio.CancelledError:
+                proc.kill()
+                raise
         log = err.decode(errors="replace")
         if proc.returncode != 0:
             if re.search(r"usage limit|plan limit|purchase more credits|quota", log, re.IGNORECASE):

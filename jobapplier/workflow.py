@@ -6,12 +6,17 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from bs4 import BeautifulSoup
 
+from . import fit as fitmod
 from . import profile as profiledoc
+from . import voice
 from .ai import Model
+from .discover import cooling_down
 from .documents import build_letter, build_resume, main_tex, validate_edits
 from .factcheck import check as fact_check
 from .factcheck import describe as fact_describe
-from .match import match_report
+from .followups import FOLLOWUP_TASK, cadence
+from .knockout import scan as knockout_scan
+from .match import match_report, skill_gaps
 from .security import company_credential, public_url
 from .store import now, package_hash, submission_block
 
@@ -154,7 +159,8 @@ availability. Do not repeat anything the current profile already contains. Retur
 
 STAGES = {**STAGES, "ingest": ["Reading document", "Comparing with profile"],
           "networking:research": ["Reading profiles", "Recording evidence"],
-          "networking:drafts": ["Writing drafts", "Checking drafts"]}
+          "networking:drafts": ["Writing drafts", "Checking drafts"],
+          "followup": ["Drafting follow-up", "Checking draft"]}
 
 
 class Workflow:
@@ -235,12 +241,66 @@ class Workflow:
         self.tasks[key] = asyncio.create_task(run())
         return key
 
+    def start_followup(self, jid):
+        """Draft the next follow-up email for an application you are waiting on. Drafts only; you send it."""
+        if jid in self.tasks and not self.tasks[jid].done():
+            raise ValueError("This application is already being worked on.")
+        job = self.store.job(jid)
+        state = cadence(job)
+        if state["urgency"] == "none":
+            raise ValueError("Follow-ups apply to applications that are in and waiting on the employer.")
+        self.tasks[jid] = asyncio.create_task(self._run_followup(jid, state))
+
+    async def _run_followup(self, jid, state):
+        stages = STAGES["followup"]
+        self.progress[jid] = {"operation": "followup", "stages": stages, "stage": stages[0], "stage_index": 0,
+                              "detail": "", "step": None, "model": None, "started": now(), "stage_started": now()}
+        try:
+            job = self.store.job(jid)
+            profile = self.store.profile_text()
+            model = self.model(jid)
+            email = job.get("last_email") if isinstance(job.get("last_email"), dict) else None
+            data = {"role": job.get("title", ""), "company": job.get("company", ""), "applied_on": (job.get("submitted_at") or "")[:10],
+                    "requirements": job.get("requirements") or [], "previous_follow_ups": [f.get("text", "")[:600] for f in job.get("follow_ups") or []],
+                    "their_last_email": {k: email.get(k, "") for k in ("kind", "subject", "summary", "at")} if email else None,
+                    "candidate_first_name": profiledoc.identity(profile).get("first_name", "")}
+            stable = {"profile": profile, "job": (job.get("description") or "")[:12000], "company": self.company_brief(job)}
+            self.stage(jid, "Drafting follow-up", f"Follow-up {state['count'] + 1} for {job.get('company', '')}")
+            found = await model.json(FOLLOWUP_TASK + "\n" + VOICE, data, stable=stable)
+            subject, body = plain(found.get("subject") or ""), plain(found.get("body") or "")
+            self.stage(jid, "Checking draft", "Fact-checking and reading the tone")
+            facts = fact_check(body, self.sources(profile, job))
+            tone = voice.check(body)
+            if facts["blocking"] or tone:
+                problems = facts["blocking"] + tone
+                found = await model.json(FOLLOWUP_TASK + "\n" + VOICE + "\nThe previous draft had problems: " + ", ".join(problems)[:600]
+                                         + ". Unsupported numbers must go; stock phrases must go. Return the full corrected {subject, body}.",
+                                         {**data, "previous_draft": body}, stable=stable)
+                candidate = plain(found.get("body") or "")
+                if candidate:
+                    subject, body = plain(found.get("subject") or subject), candidate
+                    facts, tone = fact_check(body, self.sources(profile, job)), voice.check(body)
+            draft = {"subject": subject[:200], "body": body[:2500], "check": {**facts, "voice": tone}, "drafted_at": now(), "number": state["count"] + 1}
+            self.store.update(jid, {"followup_draft": draft}, invalidate=False)
+            self.store.event(jid, f"Follow-up {draft['number']} drafted. Nothing was sent; review it in the drawer.")
+        except asyncio.CancelledError:
+            self.store.event(jid, "Follow-up draft stopped.")
+        except Exception as exc:
+            self.store.event(jid, f"Follow-up draft failed: {str(exc)[:200]}")
+        finally:
+            self.progress.pop(jid, None)
+
     def start(self, jid, operation):
         if jid in self.tasks and not self.tasks[jid].done():
             raise ValueError("This application is already being processed.")
-        status = self.store.job(jid)["status"]
+        job = self.store.job(jid)
+        status = job["status"]
         if status in {"submitted", "submitting", "uncertain"} or (status == "applied" and operation != "research"):
             raise ValueError("Check the recorded submission outcome before preparing this application again.")
+        company = self.store.company_for(job, create=False)
+        if operation != "research" and company and company.get("do_not_apply"):
+            raise ValueError(f"You marked {company['name']} as do not apply" + (f" ({company['do_not_apply_reason']})" if company.get("do_not_apply_reason") else "")
+                             + ". Clear that on the Companies page to continue.")
         self.cancelled.discard(jid)
         task = asyncio.create_task(self.run(jid, operation))
         self.tasks[jid] = task
@@ -265,6 +325,7 @@ class Workflow:
         self.progress[jid] = {"operation": operation, "stages": stages, "stage": stages[0], "stage_index": 0,
                               "detail": "", "step": None, "model": None, "started": now(), "stage_started": now()}
         prior = self.store.job(jid)["status"]
+        stopped = False
         try:
             self.store.update(jid, {"status": "preparing", "error": ""}, invalidate=prior != "applied")
             if operation == "research":
@@ -279,6 +340,7 @@ class Workflow:
                 async with self.browser.lock:
                     await self.prepare(jid)
         except asyncio.CancelledError:
+            stopped = True
             self.store.update(jid, {"status": prior if prior in {"applied", "saved"} else "needs_attention", "error": "Paused. Resume when ready."})
         except Exception as exc:
             message = str(exc)[:1500]
@@ -290,13 +352,20 @@ class Workflow:
                 self.store.event(jid, message)
         finally:
             if self.store.settings()["sheet_sync_enabled"]:
-                if jid in self.progress:
-                    self.progress[jid].update(detail="Updating your tracker sheet", model=None)
-                try:
-                    await self.sheets.sync()
-                except Exception as exc:
-                    self.store.update(jid, {"sync_status": "error", "sync_error": str(exc)[:300]}, invalidate=False)
+                if stopped:
+                    # The Stop button must clear the dashboard at once; the sheet catches up in the background.
+                    asyncio.create_task(self.sync_quietly(jid))
+                else:
+                    if jid in self.progress:
+                        self.progress[jid].update(detail="Updating your tracker sheet", model=None)
+                    await self.sync_quietly(jid)
             self.progress.pop(jid, None)
+
+    async def sync_quietly(self, jid):
+        try:
+            await self.sheets.sync()
+        except Exception as exc:
+            self.store.update(jid, {"sync_status": "error", "sync_error": str(exc)[:300]}, invalidate=False)
 
     async def research(self, jid, model=None, text=None):
         job = self.store.job(jid)
@@ -341,6 +410,31 @@ class Workflow:
         company = self.store.link_job_company(jid)
         from .logos import ensure_logo
         asyncio.create_task(ensure_logo(self.store, company))
+        await self.evaluate_fit(jid, model, company)
+
+    async def evaluate_fit(self, jid, model, company):
+        """Score the posting against the profile and record the gates that need your acknowledgment: hard stops,
+        a company you marked do-not-apply, an application to the same employer inside the cooldown window."""
+        settings = self.store.settings()
+        job = self.store.job(jid)
+        flags = list(job.get("fit_flags") or [])
+        changes = {}
+        if settings.get("fit_enabled", True):
+            self.detail(jid, "Scoring how well the posting fits your profile")
+            report = await fitmod.evaluate(model, self.store.profile_text(), job, job.get("requirements") or [])
+            changes.update(fitmod.job_fields(report))
+            flags += [s for s in report.get("hard_stops") or [] if s not in flags]
+            if report.get("score") is not None:
+                self.store.event(jid, f"Fit: {report['score']}/5, {report['label'].lower()}. {report.get('summary', '')}"[:300])
+        if company.get("do_not_apply"):
+            flags.append(f"You marked {company['name']} as do not apply" + (f": {company['do_not_apply_reason']}" if company.get("do_not_apply_reason") else "") + ".")
+        recent = cooling_down(company, [j for j in self.store.jobs() if j["id"] != jid], settings.get("reapply_cooldown_days", 0))
+        if recent:
+            flags.append(f"You already applied to {company['name']} on {recent['submitted_at'][:10]} ({recent.get('title') or 'another role'}). "
+                         "Portals keep application history; a second application inside your cooldown window is worth a thought.")
+        flags = list(dict.fromkeys(f for f in flags if f))
+        changes["fit_flags"] = flags
+        self.store.update(jid, changes, invalidate=False)
 
     async def tailor(self, jid, model, profile, meta, job, edits=None):
         """Skills tailoring + resume build shared by Advisor and AI Applier. Returns the package core."""
@@ -354,9 +448,9 @@ class Workflow:
                                     stable={"profile": profile, "job": job["description"], "company": (self.company_brief(job))})
         categories = [{"name": str(c.get("name", "")), "items": [str(i) for i in (c.get("items") or [])]}
                       for c in (proposal.get("categories") or []) if isinstance(c, dict) and c.get("items")]
-        known = {s.lower() for s in profiledoc.skills_list(profile)}
-        for c in categories:  # only skills the profile supports
-            c["items"] = [i for i in c["items"] if i.lower() in known or any(i.lower() in k or k in i.lower() for k in known)]
+        gaps = skill_gaps([i for c in categories for i in c["items"]], profiledoc.skills_list(profile), profile)
+        for c in categories:  # only skills the Skills section supports go in the resume; the rest is reported, not dropped silently
+            c["items"] = [i for i in c["items"] if i in gaps["supported"]]
         categories = [c for c in categories if c["items"]]
         edits_ok = [e for e in validate_edits(resume_source, proposal.get("suggested_edits"))
                     if not fact_check(e["proposed"], [profile, e["original"], job.get("description") or ""])["blocking"]]
@@ -372,6 +466,7 @@ class Workflow:
                                        previous=(job.get("package") or {}).get("match"), github=settings.get("match_github", True))
         return {"resume": resume, "match": match, "selected_skills": selected, "categories": resume.get("categories") or categories,
                 "tailoring_summary": str(proposal.get("tailoring_summary") or "Skills selected for relevance."),
+                "skill_gaps": {k: v for k, v in gaps.items() if k != "supported"},
                 "suggested_edits": edits_ok, "accepted_edits": edits or [], "profile_version": meta["version"]}
 
     def sources(self, profile, job):
@@ -392,6 +487,17 @@ class Workflow:
                                      {**data, "previous_draft": letter}, stable=stable)
             letter = plain(found.get("letter") or letter)
             result = fact_check(letter, self.sources(profile, job))
+        tone = voice.check(letter)
+        if tone:
+            self.detail(jid, "Rewriting the letter in a plainer voice: " + voice.describe(tone))
+            found = await model.json(task + "\n" + voice.rewrite_instruction(tone) + " Return the full corrected letter.",
+                                     {**data, "previous_draft": letter}, stable=stable)
+            candidate = plain(found.get("letter") or "")
+            if candidate and not fact_check(candidate, self.sources(profile, job))["blocking"]:
+                letter = candidate
+                result = fact_check(letter, self.sources(profile, job))
+            tone = voice.check(letter)
+        result["voice"] = tone
         return letter, result
 
     def company_brief(self, job):
@@ -461,6 +567,9 @@ class Workflow:
                 q["check"] = fact_describe(checked)
                 if checked["blocking"]:
                     q["confidence"] = "low"
+            tone = voice.check(str(q.get("answer") or ""))
+            if tone:
+                q["voice"] = voice.describe(tone)
         package["likely_questions"] = questions
         package.update({"advice_at": now(), "form_ready": False, "unresolved": [], "answers": package.get("answers") or [],
                         "attachments": [], "visual_reviewed": False})
@@ -501,10 +610,32 @@ class Workflow:
         why = "no saved login for this company" if (auth["login"] or auth["signup"]) else "a sign-in is required"
         self.hand_off(jid, package, page, f"Sign in to {company['name']} in the Chrome window ({why}), then resume.")
 
+    def prescan(self, jid, package, page, snapshot, answers):
+        """Knock-out questions are found before anything is filled: one without an answer in your profile hands
+        off right away (the answer is saved to the profile and reused); the rest are listed for the review."""
+        known = package.setdefault("knockouts", [])
+        hits = knockout_scan(snapshot, answers, seen={k["label"] for k in known})
+        if not hits:
+            return
+        known.extend(hits)
+        for hit in hits:
+            self.store.event(jid, ("Knock-out question: " if hit["kind"] == "knockout" else "Form warning: ") + f"“{hit['label']}”. {hit['note']}")
+        open_ = [h for h in hits if h["kind"] == "knockout" and not h["answered"]]
+        if open_:
+            self.hand_off(jid, package, page, f"The form asks “{open_[0]['label']}”, a question that can reject automatically. "
+                                               "Answer it here (saved to your profile) or decide not to apply, then resume.")
+        self.store.update(jid, {"package": package}, invalidate=False)
+
     def hand_off(self, jid, package, page, question):
         package["unresolved"] = [question]
         self.store.update(jid, {"package": package, "application_url": page.url})
         raise ValueError(question)
+
+    @staticmethod
+    def check_fit_threshold(job, settings):
+        score = job.get("fit_score")
+        if settings.get("fit_enabled", True) and score is not None and float(score) < float(settings.get("fit_threshold", 0)):
+            raise ValueError(f"Fit score {score}/5 is below your autonomous threshold ({settings['fit_threshold']}). Parked for your review.")
 
     def autonomous_today(self):
         today = now()[:10]
@@ -519,6 +650,7 @@ class Workflow:
         job = self.store.job(jid)
         if job.get("posting_status") in {"closed", "expired"}:
             raise ValueError(f"The posting looks {job['posting_status']}. Read the job again before applying.")
+        self.check_fit_threshold(job, settings)
         package = dict(job.get("package") or {})
         if package.get("accepted_edits"):  # experience wording is never changed autonomously
             package.update(accepted_edits=[], resume=None)
@@ -527,6 +659,7 @@ class Workflow:
             await self.prepare(jid)
         job = self.store.job(jid)
         package = job.get("package") or {}
+        self.check_fit_threshold(job, settings)
         if job["status"] != "ready" or not package.get("form_ready"):
             raise ValueError("Preparation did not reach a complete form. Review the application before submitting.")
         if job.get("fit_flags") and not job.get("fit_acknowledged"):
@@ -621,6 +754,7 @@ class Workflow:
                 self.store.event(jid, handled)
                 previous = None
                 continue
+            self.prescan(jid, package, page, snapshot, answers)
             if (LETTER_RE.search(alltext) or mentions_letter(job)) and not package["letter"]:
                 template = next((d for d in docs if d["kind"] == "cover_template"), None)
                 if template:
@@ -760,6 +894,8 @@ class Workflow:
                     pass
                 self.cancelled.add(key)
             task.cancel()
+            if key in self.progress:
+                self.progress[key].update(stopping=True, detail="Stopping", model=None)
             stopped += 1
         if self.batch_task and not self.batch_task.done():
             for job in self.store.jobs():  # remaining batch items are skipped; the one mid-submit completes

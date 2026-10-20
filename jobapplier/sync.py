@@ -234,7 +234,6 @@ class Sync:
             if blob.is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 write_atomic(target, decrypt(key, blob.read_bytes()))
-<<<<<<< HEAD
         local_docs = store.documents()
         have = {d["id"] for d in local_docs} | {d.get("sha256") for d in local_docs if d.get("sha256")}
         for doc in reversed(snap.get("documents", [])):  # oldest first, so the list keeps its order
@@ -243,8 +242,6 @@ class Sync:
             if (store.root / doc["path"]).is_file():
                 store.save_document(doc)
                 changed += 1
-=======
->>>>>>> 7b4051d (JobApplier)
         mapping = self.match_companies(snap.get("companies", []))
         local_companies = {c["id"]: c for c in store.companies()}
         for company in snap.get("companies", []):
@@ -260,23 +257,14 @@ class Sync:
                 asked = {q["question"].strip().lower() for q in mine.get("questions") or []}
                 merged["questions"] = (mine.get("questions") or []) + [q for q in company.get("questions") or [] if q["question"].strip().lower() not in asked]
                 if merged != mine:
-<<<<<<< HEAD
                     store.save_company({**merged, "updated_at": max(mine.get("updated_at", ""), company.get("updated_at", ""))}, touch=False)
-=======
-                    store.save_company({**merged, "updated_at": max(mine.get("updated_at", ""), company.get("updated_at", ""))})
->>>>>>> 7b4051d (JobApplier)
                     changed += 1
                 continue
             mine = local_companies.get(company["id"])
             if mine is None or company.get("updated_at", "") > mine.get("updated_at", ""):
-<<<<<<< HEAD
                 store.save_company({**company, "updated_at": company.get("updated_at") or now()}, touch=False)
                 changed += 1
         tombstones = {**store.get("tombstones", {}), **snap.get("tombstones", {})}
-=======
-                store.save_company({**company, "updated_at": company.get("updated_at", now())})
-                changed += 1
->>>>>>> 7b4051d (JobApplier)
         local_jobs = {j["id"]: j for j in store.jobs()}
         by_url = {j["url"]: j["id"] for j in local_jobs.values()}
         for jid, ts in tombstones.items():  # jobs deleted on another Mac after our last edit
@@ -285,11 +273,8 @@ class Sync:
                 local_jobs.pop(jid)
                 changed += 1
         for job in snap.get("jobs", []):
-<<<<<<< HEAD
             if tombstones.get(job["id"], "") > job.get("updated_at", ""):
                 continue
-=======
->>>>>>> 7b4051d (JobApplier)
             if job.get("company_id") in mapping:
                 job = {**job, "company_id": mapping[job["company_id"]]}
             mine = local_jobs.get(job["id"])
@@ -299,10 +284,6 @@ class Sync:
                 job["revision"] = max(job.get("revision", 1), (mine or {}).get("revision", 0)) + 1
                 store.put_job(job)
                 changed += 1
-<<<<<<< HEAD
-=======
-        tombstones = {**store.get("tombstones", {}), **{k: v for k, v in snap.get("tombstones", {}).items()}}
->>>>>>> 7b4051d (JobApplier)
         local_people = {p["id"]: p for p in store.people()}
         by_link = {p["profile_url"].lower(): p for p in local_people.values() if p.get("profile_url")}
         for person in snap.get("people", []):

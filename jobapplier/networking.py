@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import httpx
 from bs4 import BeautifulSoup
 
+from . import voice
 from .factcheck import check as fact_check
 from .factcheck import describe as fact_describe
 from .security import public_url
@@ -509,6 +510,9 @@ class Networking:
                     facts = fact_check(text, [profile, setup["intro"], json.dumps(evidence)])
                     if facts["blocking"]:
                         problems.append(fact_describe(facts))
+                    tone = voice.check(text)
+                    if tone:
+                        problems.append("reads like machine writing: " + voice.describe(tone))
                     draft.update(text=text, source_url=source, status="needs_review" if problems else "drafted",
                                  review_note="; ".join(problems) + (f". {note}" if note else "") if problems else note)
             person["draft"] = draft
