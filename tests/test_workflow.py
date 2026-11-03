@@ -389,6 +389,35 @@ async def test_one_page_rule_trims_skills_until_it_fits(store, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pasted_latex_source_is_tailored_without_marker_settings(store, monkeypatch):
+    """The skills section is found from its heading when Settings has no markers; the pasted source replaces older ones."""
+    from jobapplier import documents
+    tex = ("\\documentclass{article}\\begin{document}\\section{EDUCATION}\nUT\n\\section{TECHNICAL SKILLS}\n"
+           "\\textbf{Programming:}\nPython\\par\n\\textbf{Languages:}\nEnglish, French\n\\section{PUBLICATIONS}\nPaper\n\\end{document}\n")
+    documents.save_upload(store, "old.tex", "latex", b"\\begin{document}old\\end{document}")
+    info = documents.save_latex_source(store, tex)
+    assert info["start"] == "\\section{TECHNICAL SKILLS}" and info["end"] == "\\section{PUBLICATIONS}"
+    assert [d["name"] for d in store.documents() if d["kind"] == "latex"] == ["resume.tex"]
+    with pytest.raises(ValueError, match="whole"):
+        documents.save_latex_source(store, "just a fragment")
+
+    async def fake_compile(directory, main):
+        return directory / "x.pdf", 1
+    monkeypatch.setattr(documents, "compile_tex", fake_compile)
+    (store.root / "artifacts").mkdir(exist_ok=True)
+    job, _ = store.add_job("https://jobs.example.com/latex")
+    out = store.root / "artifacts" / job["id"]
+    out.mkdir(parents=True, exist_ok=True)
+
+    async def compile_and_write(directory, main):
+        (directory / "x.pdf").write_bytes(b"%PDF")
+        return directory / "x.pdf", 1
+    monkeypatch.setattr(documents, "compile_tex", compile_and_write)
+    result = await documents.build_resume(store, job["id"], categories=[{"name": "Embedded", "items": ["ESP32", "Arduino"]}])
+    source = (store.root / result["tex_path"]).read_text()
+    assert "\\textbf{Embedded:}" in source and "English, French" in source and "\\section{PUBLICATIONS}\nPaper" in source
+    assert "Programming" not in source.split("TECHNICAL SKILLS")[1]  # the old skills lines were replaced
+
 async def test_resume_pdf_without_latex_source_accepts_categories(store):
     """Only a prepared resume PDF is uploaded (no Overleaf source): tailoring still passes skill categories, and the
     build must fall back to the PDF instead of crashing on a variable that only the LaTeX branch sets."""

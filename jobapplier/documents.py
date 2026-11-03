@@ -73,6 +73,30 @@ def save_upload(store, name, kind, data):
     return doc
 
 
+def latex_source(store):
+    """The main .tex of the newest LaTeX upload, with the skills markers that would be used: {text, name, start, end}."""
+    source = store.document_by_kind("latex")
+    if not source:
+        return {"text": "", "name": "", "start": "", "end": ""}
+    settings = store.settings()
+    path = store.root / "documents" / source["id"] / "project" / main_tex(source, settings)
+    text = path.read_text(errors="replace") if path.is_file() else ""
+    start, end = skills_markers(text, settings) if text else (None, None)
+    return {"text": text, "name": source["name"], "start": start or "", "end": end or ""}
+
+
+def save_latex_source(store, text):
+    """Store pasted LaTeX as the resume source (replacing earlier LaTeX uploads) and report the markers found."""
+    text = text.replace("\r\n", "\n").strip() + "\n"
+    if "\\begin{document}" not in text or "\\end{document}" not in text:
+        raise ValueError("Paste the whole .tex file, including \\begin{document} and \\end{document}.")
+    for old in [d for d in store.documents(with_text=False) if d["kind"] == "latex"]:
+        store.delete_document(old["id"])
+        shutil.rmtree(store.root / "documents" / old["id"], ignore_errors=True)
+    save_upload(store, "resume.tex", "latex", text.encode())
+    return latex_source(store)
+
+
 def latex_escape(text):
     mapping = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#",
                "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
@@ -180,6 +204,26 @@ async def compile_tex(directory, main):
     return pdf, len(reader.pages)
 
 
+SKILLS_SECTION = re.compile(r"\\section\*?\{[^}]*skills[^}]*\}", re.I)
+NEXT_SECTION = re.compile(r"\\section\*?\{[^}]*\}|\\end\{document\}")
+
+
+def skills_markers(source, settings):
+    """(start, end) markers for the skills block. Markers set in Settings win when both occur exactly once in the
+    source; otherwise the skills section is found on its own: its `\\section{... Skills ...}` heading up to the next
+    section heading (or `\\end{document}`), as long as both are unique in the source. (None, None) when nothing fits."""
+    start, end = (settings.get("skills_start") or "").strip(), (settings.get("skills_end") or "").strip()
+    if start and end and source.count(start) == 1 and source.count(end) == 1 and source.index(start) < source.index(end):
+        return start, end
+    heading = SKILLS_SECTION.search(source)
+    if not heading or source.count(heading.group(0)) != 1:
+        return None, None
+    after = NEXT_SECTION.search(source, heading.end())
+    if not after or source.count(after.group(0)) != 1:
+        return None, None
+    return heading.group(0), after.group(0)
+
+
 def main_tex(source, settings):
     """The main .tex of the uploaded project: the configured name if it exists there, else the only file."""
     files = source.get("tex_files") or []
@@ -200,11 +244,16 @@ async def build_resume(store, jid, skills=None, *, categories=None, edits=None, 
     out = store.root / "artifacts" / jid / str(uuid.uuid4())
     out.mkdir(parents=True, mode=0o700)
     diff, warning, dropped, skills_block, tex, cats = "", "", [], "", "", []
-    if source and settings["skills_start"] and settings["skills_end"]:
+    start = end = None
+    if source:
+        main = main_tex(source, settings)
+        main_path = store.root / "documents" / source["id"] / "project" / main
+        if main_path.is_file():
+            start, end = skills_markers(main_path.read_text(), settings)
+    if source and start and end:
         original = store.root / "documents" / source["id"] / "project"
         shutil.copytree(original, out / "baseline")
         shutil.copytree(original, out / "tailored")
-        main = main_tex(source, settings)
         baseline_pdf, baseline_pages = await compile_tex(out / "baseline", main)
         target = (out / "tailored" / main).resolve()
         if not target.is_relative_to((out / "tailored").resolve()):
@@ -212,15 +261,15 @@ async def build_resume(store, jid, skills=None, *, categories=None, edits=None, 
         old = target.read_text()
         base = apply_edits(old, edits) if edits else old
         if edits:
-            replace_block(base, settings["skills_start"], settings["skills_end"], "")  # markers must survive the edits
+            replace_block(base, start, end, "")  # markers must survive the edits
         cats = [dict(c, items=list(c.get("items") or [])) for c in (categories or [])]  # copies: trimming mutates
-        original_block = block_between(old, settings["skills_start"], settings["skills_end"])
+        original_block = block_between(old, start, end)
         for attempt in range(attempts + 1):
             if cats:
                 skills_block = render_skills(cats, original_block)
-                new = replace_block(base, settings["skills_start"], settings["skills_end"], skills_block)
+                new = replace_block(base, start, end, skills_block)
             else:
-                new = replace_skills(base, settings["skills_start"], settings["skills_end"], skills or [])
+                new = replace_skills(base, start, end, skills or [])
             target.write_text(new)
             pdf, pages = await compile_tex(out / "tailored", main)
             limit = max(max_pages, baseline_pages)
@@ -240,9 +289,10 @@ async def build_resume(store, jid, skills=None, *, categories=None, edits=None, 
         (out / "resume.tex").write_text(new)
     elif master:
         pdf, pages = store.root / master["path"], master["pages"]
-        warning = "Using your original PDF unchanged. Configure LaTeX skills markers to enable skills tailoring."
+        warning = ("Using your original PDF unchanged. " + ("No skills section was found in your LaTeX source; set the skills markers in Settings."
+                   if source else "Paste your resume's LaTeX source on the Profile page to enable skills tailoring."))
     else:
-        raise ValueError("Upload a resume PDF, or configure your Overleaf source and skills markers.")
+        raise ValueError("Upload a resume PDF, or paste your resume's LaTeX source on the Profile page.")
     shutil.copyfile(pdf, out / "resume.pdf")
     return {"path": str((out / "resume.pdf").relative_to(store.root)), "sha256": hashlib.sha256((out / "resume.pdf").read_bytes()).hexdigest(),
             "pages": pages, "diff": diff, "warning": warning, "dropped": dropped, "skills_block": skills_block.strip(),

@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import {Check, ExternalLink, FileText, History, Link2, LoaderCircle, Sparkles, Upload, X} from 'lucide-react';
+import {Check, Code, ExternalLink, FileText, History, Link2, LoaderCircle, Sparkles, Upload, X} from 'lucide-react';
 import {api, date, Obj, PanelProps} from '../api';
 import {Button, Empty, Markdown, PageHead, Panel, Progress} from '../ui';
 
@@ -9,14 +9,20 @@ const SECTIONS = ['Identity', 'Education', 'Experience', 'Projects', 'Skills', '
   'Coursework & Training', 'Links', 'Answers', 'Notes'];
 
 export function Profile({state, run, busy}: PanelProps) {
-  const [doc, setDoc] = useState<Obj | null>(null), [text, setText] = useState(''), [view, setView] = useState<'edit' | 'preview'>('edit');
+  const [doc, setDoc] = useState<Obj | null>(null), [text, setText] = useState(''), [view, setView] = useState<'edit' | 'preview' | 'latex'>('edit');
   const [kind, setKind] = useState('resume'), [portfolio, setPortfolio] = useState(''), [history, setHistory] = useState('');
+  // The resume's LaTeX source, edited here as plain text; the server finds the skills section on its own.
+  const [latex, setLatex] = useState<Obj | null>(null), [tex, setTex] = useState('');
   const editor = useRef<HTMLTextAreaElement>(null);
   const load = async () => {const d = await api('/profile/doc'); setDoc(d); setText(d.text); setHistory('');};
-  useEffect(() => {load().catch(() => {});}, []);
+  const loadLatex = async () => {const l = await api('/documents/latex'); setLatex(l); setTex(l.text);};
+  useEffect(() => {load().catch(() => {}); loadLatex().catch(() => {});}, []);
   // Reload when the server-side version changes (append/ingest) and the editor has no unsaved edits.
   useEffect(() => {if (doc && state.profile.version !== doc.version && text === doc.text) load().catch(() => {});}, [state.profile.version]);
   const dirty = !!doc && text !== doc.text;
+  const texDirty = !!latex && tex !== latex.text;
+  const saveLatex = () => run('latex', async () => {const l = await api('/documents/latex', 'PUT', {text: tex}); setLatex(l); setTex(l.text);},
+    'Resume LaTeX saved. Tailoring will edit its skills section.');
   const save = (verified?: boolean) => run('profile', async () => {
     const d = await api('/profile/doc', 'PUT', verified === undefined ? {text} : {text, verified});
     setDoc({...(doc || {}), ...d, text}); setHistory('');
@@ -32,7 +38,8 @@ export function Profile({state, run, busy}: PanelProps) {
     <PageHead title="Profile" sub="Everything the assistant knows about you. Upload documents to grow it; edit the text directly to correct it.">
       <label className="check" title="Prepared applications use only a verified profile">
         <input type="checkbox" checked={!!state.profile.verified} onChange={e => save(e.target.checked)}/>Verified</label>
-      <Button primary disabled={!dirty || !!busy} onClick={() => save()}><Check size={15}/>Save profile</Button>
+      {view === 'latex' ? <Button primary disabled={!texDirty || !!busy} onClick={saveLatex}><Check size={15}/>Save LaTeX</Button>
+        : <Button primary disabled={!dirty || !!busy} onClick={() => save()}><Check size={15}/>Save profile</Button>}
     </PageHead>
 
     {proposals.map(p => <Proposal key={p.doc_id} p={p} run={run} busy={busy}/>)}
@@ -67,20 +74,28 @@ export function Profile({state, run, busy}: PanelProps) {
 
       <section className="panel editor-panel">
         <header className="panel-head">
-          <div className="segmented"><button className={view === 'edit' ? 'on' : ''} onClick={() => setView('edit')}>Edit</button><button className={view === 'preview' ? 'on' : ''} onClick={() => setView('preview')}>Preview</button></div>
+          <div className="segmented"><button className={view === 'edit' ? 'on' : ''} onClick={() => setView('edit')}>Edit</button><button className={view === 'preview' ? 'on' : ''} onClick={() => setView('preview')}>Preview</button>
+            <button className={view === 'latex' ? 'on' : ''} onClick={() => setView('latex')}><Code size={13}/> Resume LaTeX</button></div>
           <div className="editor-meta">
-            {dirty ? <span className="warn-text small">Unsaved changes</span> : doc?.updated_at ? <span className="muted small">Saved {date(doc.updated_at)}</span> : null}
-            {doc && doc.history?.length > 0 && <label className="history"><History size={13}/><select value={history} onChange={e => {
+            {view === 'latex' ? (texDirty ? <span className="warn-text small">Unsaved changes</span>
+              : latex?.start ? <span className="muted small">Skills section: <code>{latex.start}</code> to <code>{latex.end}</code></span>
+              : latex?.text ? <span className="warn-text small">No skills section found. Add a <code>\section{'{'}Skills{'}'}</code> heading or set markers in Settings.</span>
+              : <span className="muted small">Paste the whole .tex file from Overleaf.</span>)
+            : dirty ? <span className="warn-text small">Unsaved changes</span> : doc?.updated_at ? <span className="muted small">Saved {date(doc.updated_at)}</span> : null}
+            {view !== 'latex' && doc && doc.history?.length > 0 && <label className="history"><History size={13}/><select value={history} onChange={e => {
               const name = e.target.value; setHistory(name);
               if (name) api(`/profile/history/${encodeURIComponent(name)}`).then(r => {setText(r.text); setView('preview');});
               else setText(doc.text);
             }}><option value="">Current version</option>{doc.history.map((h: string) => <option key={h} value={h}>{h.replace('.md', '').replace('T', ' ').replace('Z', '')}</option>)}</select></label>}
           </div>
         </header>
-        {!doc ? <p className="muted"><LoaderCircle size={14} className="spin"/> Loading…</p>
+        {view === 'latex' ? <>
+          <textarea className="editor mono" spellCheck={false} value={tex} onChange={e => setTex(e.target.value)} placeholder={'\\documentclass{article}\n...\n\\section{TECHNICAL SKILLS}\n...\n\\end{document}'}/>
+          <p className="hint">This is the source the tailored resume is compiled from. Only the skills section is rewritten per job; everything else stays as you wrote it. The tailored PDF must compile with Tectonic, so keep the packages your Overleaf project uses.</p>
+        </> : !doc ? <p className="muted"><LoaderCircle size={14} className="spin"/> Loading…</p>
           : view === 'edit' ? <textarea ref={editor} className="editor" spellCheck={false} value={text} onChange={e => setText(e.target.value)}/>
           : <Markdown text={text}/>}
-        {history && <p className="hint">Viewing an older version. Click Save profile to restore it, or pick “Current version” to go back.</p>}
+        {view !== 'latex' && history && <p className="hint">Viewing an older version. Click Save profile to restore it, or pick “Current version” to go back.</p>}
       </section>
     </div>
   </div>;

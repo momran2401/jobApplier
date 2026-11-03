@@ -411,6 +411,10 @@ class Store:
             row = c.execute("SELECT data FROM documents WHERE id=?", (did,)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def delete_document(self, did):
+        with self.connection() as c:
+            c.execute("DELETE FROM documents WHERE id=?", (did,))
+
     def document_by_kind(self, kind):
         """The most recent upload of one kind (latex, resume, transcript, cover_template), or None."""
         return next((d for d in self.documents() if d["kind"] == kind), None)

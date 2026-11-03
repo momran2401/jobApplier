@@ -19,7 +19,7 @@ from . import profile as profiledoc
 from .ai import codex_path, local_base, model_list, ollama_models, start_ollama
 from .browser import Browser
 from .discover import find_new
-from .documents import MAX_FILE, save_upload
+from .documents import MAX_FILE, latex_source, save_latex_source, save_upload
 from .monitor import Monitor
 from .networking import Networking
 from .security import save_secret, secret
@@ -413,6 +413,23 @@ def create_app(data_dir=None):
     async def upload(kind: str = Form(...), file: UploadFile = File(...)):
         data = await file.read(MAX_FILE + 1)
         return public_doc(save_upload(store, file.filename or "upload.txt", kind, data))
+
+    @app.get("/api/documents/latex")
+    async def latex_get():
+        """The resume's LaTeX source as the Profile page edits it, with the skills markers that will be used."""
+        return latex_source(store)
+
+    @app.put("/api/documents/latex")
+    async def latex_put(request: Request):
+        body = await request.json()
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Paste your resume's LaTeX source first.")
+        if len(text) > 400_000:
+            raise ValueError("The LaTeX source is too large (400k character limit).")
+        result = save_latex_source(store, text)
+        store.event(None, "Resume LaTeX source saved." + ("" if result["start"] else " No skills section was found; set the markers in Settings."))
+        return result
 
     @app.get("/api/documents/{did}/text")
     async def document_text(did: str):

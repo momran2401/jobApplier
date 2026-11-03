@@ -13,7 +13,7 @@ from . import profile as profiledoc
 from . import voice
 from .ai import Model
 from .discover import CLOSED_TEXT, cooling_down
-from .documents import build_letter, build_resume, main_tex, validate_edits
+from .documents import build_letter, build_resume, latex_source, validate_edits
 from .factcheck import check as fact_check
 from .factcheck import describe as fact_describe
 from .followups import FOLLOWUP_TASK, cadence
@@ -440,12 +440,7 @@ class Workflow:
 
     async def tailor(self, jid, model, profile, meta, job, edits=None):
         """Skills tailoring + resume build shared by Advisor and AI Applier. Returns the package core."""
-        source = self.store.document_by_kind("latex")
-        resume_source = ""
-        if source:
-            path = self.store.root / "documents" / source["id"] / "project" / main_tex(source, self.store.settings())
-            if path.is_file():
-                resume_source = path.read_text()
+        resume_source = latex_source(self.store)["text"]
         proposal = await model.json(TAILOR_TASK, {"profile_skills": profiledoc.skills_list(profile), "resume_source": resume_source},
                                     stable={"profile": profile, "job": job["description"], "company": (self.company_brief(job))})
         categories = [{"name": str(c.get("name", "")), "items": [str(i) for i in (c.get("items") or [])]}
