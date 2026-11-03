@@ -57,6 +57,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = self.root / "workspace.sqlite"
         self.lock = threading.RLock()
+        self._profile_cache = None  # (file stat, text, facts derived from the text)
         with self.connection() as c:
             c.executescript("""
               CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -82,7 +83,21 @@ class Store:
         return self.root / "profile" / "profile.md"
 
     def profile_text(self):
-        return self.profile_path.read_text() if self.profile_path.exists() else profiledoc.empty_doc()
+        return self._profile()[0]
+
+    def _profile(self):
+        """Profile text plus the facts derived from it, re-read only when the file changed (the UI polls every second)."""
+        try:
+            st = self.profile_path.stat()
+            key = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            key = None
+        if not self._profile_cache or self._profile_cache[0] != key:
+            text = self.profile_path.read_text() if key else profiledoc.empty_doc()
+            facts = {"version": profiledoc.version(text), "identity": profiledoc.identity(text),
+                     "skills": len(profiledoc.skills_list(text)), "chars": len(text)}
+            self._profile_cache = (key, text, facts)
+        return self._profile_cache[1], self._profile_cache[2]
 
     def save_profile_text(self, text, reason="edited"):
         text = text.replace("\r\n", "\n")
@@ -100,11 +115,10 @@ class Store:
 
     def profile(self):
         """What the app and UI need to know about the profile (not the text itself)."""
-        text = self.profile_text()
+        _, facts = self._profile()
         meta = self.get("profile_meta", {})
-        return {"version": meta.get("version") or profiledoc.version(text), "verified": bool(meta.get("verified")),
-                "updated_at": meta.get("updated_at"), "identity": profiledoc.identity(text),
-                "skills": len(profiledoc.skills_list(text)), "chars": len(text)}
+        return {**facts, "version": meta.get("version") or facts["version"], "verified": bool(meta.get("verified")),
+                "updated_at": meta.get("updated_at")}
 
     def profile_history(self):
         files = sorted((self.root / "profile" / "history").glob("*.md"), reverse=True)
@@ -385,13 +399,21 @@ class Store:
         with self.connection() as c:
             c.execute("INSERT OR REPLACE INTO documents VALUES (?,?)", (doc["id"], json.dumps(doc)))
 
-    def documents(self):
+    def documents(self, with_text=True):
+        """`with_text=False` leaves the extracted text (up to 100k characters per upload) in the database."""
+        column = "data" if with_text else "json_remove(data, '$.text')"
         with self.connection() as c:
-            rows = c.execute("SELECT data FROM documents ORDER BY rowid DESC").fetchall()
+            rows = c.execute(f"SELECT {column} FROM documents ORDER BY rowid DESC").fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def document(self, did):
-        return next((d for d in self.documents() if d["id"] == did), None)
+        with self.connection() as c:
+            row = c.execute("SELECT data FROM documents WHERE id=?", (did,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def document_by_kind(self, kind):
+        """The most recent upload of one kind (latex, resume, transcript, cover_template), or None."""
+        return next((d for d in self.documents() if d["kind"] == kind), None)
 
     def recover(self):
         for job in self.jobs():

@@ -2,6 +2,7 @@ import asyncio
 import difflib
 import hashlib
 import io
+import os
 import re
 import shutil
 import stat
@@ -158,7 +159,6 @@ async def compile_tex(directory, main):
         cmd = ["pdflatex", "-no-shell-escape", "-interaction=nonstopmode", "-halt-on-error", path.name]
     else:
         raise ValueError("LaTeX is not installed. Install Tectonic, or upload a prepared resume PDF for this application.")
-    import os
     env = {**os.environ, "openin_any": "p", "openout_any": "p", "shell_escape": "f"}
     proc = await asyncio.create_subprocess_exec(*cmd, cwd=path.parent, env=env,
                                               stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
@@ -199,7 +199,7 @@ async def build_resume(store, jid, skills=None, *, categories=None, edits=None, 
     master = next((d for d in docs if d["kind"] == "resume" and d["path"].endswith(".pdf")), None)
     out = store.root / "artifacts" / jid / str(uuid.uuid4())
     out.mkdir(parents=True, mode=0o700)
-    diff, warning, dropped, skills_block, tex = "", "", [], "", ""
+    diff, warning, dropped, skills_block, tex, cats = "", "", [], "", "", []
     if source and settings["skills_start"] and settings["skills_end"]:
         original = store.root / "documents" / source["id"] / "project"
         shutil.copytree(original, out / "baseline")
@@ -213,7 +213,7 @@ async def build_resume(store, jid, skills=None, *, categories=None, edits=None, 
         base = apply_edits(old, edits) if edits else old
         if edits:
             replace_block(base, settings["skills_start"], settings["skills_end"], "")  # markers must survive the edits
-        cats = [dict(c, items=list(c.get("items") or [])) for c in (categories or [])]
+        cats = [dict(c, items=list(c.get("items") or [])) for c in (categories or [])]  # copies: trimming mutates
         original_block = block_between(old, settings["skills_start"], settings["skills_end"])
         for attempt in range(attempts + 1):
             if cats:
@@ -247,7 +247,7 @@ async def build_resume(store, jid, skills=None, *, categories=None, edits=None, 
     return {"path": str((out / "resume.pdf").relative_to(store.root)), "sha256": hashlib.sha256((out / "resume.pdf").read_bytes()).hexdigest(),
             "pages": pages, "diff": diff, "warning": warning, "dropped": dropped, "skills_block": skills_block.strip(),
             "tex_path": str((out / "resume.tex").relative_to(store.root)) if tex else "",
-            "categories": cats if categories else []}
+            "categories": cats}
 
 
 LETTER_TEMPLATE = r"""\documentclass[11pt]{article}

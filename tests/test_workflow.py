@@ -389,6 +389,20 @@ async def test_one_page_rule_trims_skills_until_it_fits(store, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resume_pdf_without_latex_source_accepts_categories(store):
+    """Only a prepared resume PDF is uploaded (no Overleaf source): tailoring still passes skill categories, and the
+    build must fall back to the PDF instead of crashing on a variable that only the LaTeX branch sets."""
+    from jobapplier import documents
+    pdf = store.root / "documents" / "master.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    store.save_document({"id": "d1", "name": "master.pdf", "kind": "resume", "path": "documents/master.pdf", "text": "", "pages": 1,
+                         "tex_files": [], "sha256": "x", "created_at": "2026-01-01"})
+    job, _ = store.add_job("https://jobs.example.com/pdf-only")
+    result = await documents.build_resume(store, job["id"], ["Python"], categories=[{"name": "Programming", "items": ["Python"]}])
+    assert result["pages"] == 1 and result["categories"] == [] and "unchanged" in result["warning"]
+    assert (store.root / result["path"]).read_bytes() == b"%PDF-1.4 fake"
+
 async def test_advise_produces_package_without_browser(store, monkeypatch):
     from jobapplier import ai
     from jobapplier import workflow as wf_module
@@ -433,6 +447,21 @@ async def test_advise_produces_package_without_browser(store, monkeypatch):
     assert company["domain"] == "jobs.example.com"  # a company-run careers host stays the matching domain
     assert "Summarize this employer" in " ".join(calls) and len(calls) == 4
 
+
+async def test_letter_gets_one_rewrite_covering_facts_and_voice(store):
+    """A draft with an unsupported number AND machine-sounding phrasing costs one rewrite call, not two."""
+    calls = []
+
+    class M:
+        async def json(self, task, data, stable=None, **kw):
+            calls.append(task)
+            if "previous_draft" in data:
+                return {"letter": "I built a Python robot at UT Austin and would like to talk about the role."}
+            return {"letter": "I leveraged Python to cut costs by 40% at UT Austin."}
+    wf = Workflow(store, None, None)
+    letter, result = await wf.write_letter("j", M(), "Draft a cover letter", {}, ["Python robot UT Austin"], {})
+    assert len(calls) == 2 and "40%" in calls[1] and "machine-written" in calls[1]
+    assert letter.startswith("I built") and result["blocking"] == [] and result["voice"] == []
 
 def snapshot_login(google=True, signup=False, otp=False):
     fields = [{"index": 0, "label": "Email", "type": "email", "value": "", "required": True, "options": [], "disabled": False},

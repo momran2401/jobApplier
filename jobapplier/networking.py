@@ -263,10 +263,17 @@ class Networking:
         return setup
 
     def summary(self):
-        connections = self.store.get("connections")
         return {"setup": self.setup(), "people": self.store.people(), "limits": LIMITS, "quota_left": self.quota_left(),
-                "connections": {"count": connections["count"], "imported_at": connections["imported_at"]} if connections else None,
-                "last_version": self.store.get("networking_version")}
+                "connections": self.connections_info(), "last_version": self.store.get("networking_version")}
+
+    def connections_info(self):
+        """Count and import date of Connections.csv without loading its rows (the dashboard asks every second)."""
+        info = self.store.get("connections_info")
+        if info is None:
+            rows = self.store.get("connections")
+            info = {"count": rows["count"], "imported_at": rows["imported_at"]} if rows else False
+            self.store.set("connections_info", info)
+        return info or None
 
     # ---- daily LinkedIn page quota ----
     def quota_left(self):
@@ -301,6 +308,7 @@ class Networking:
         if not rows:
             raise ValueError("Connections.csv has no rows.")
         self.store.set("connections", {"imported_at": now(), "count": len(rows), "rows": rows})
+        self.store.set("connections_info", {"imported_at": now(), "count": len(rows)})
         matched = self.match_connections()
         self.store.event(None, f"Imported {len(rows)} LinkedIn connections; {matched} at your target companies joined the networking list.")
         return {"count": len(rows), "matched": matched}

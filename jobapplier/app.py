@@ -1,9 +1,9 @@
 import asyncio
 import json
-import os
 import re
 import secrets
 import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -16,7 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import followups, logos
 from . import profile as profiledoc
-from .ai import local_base, model_list, ollama_models, start_ollama
+from .ai import codex_path, local_base, model_list, ollama_models, start_ollama
 from .browser import Browser
 from .discover import find_new
 from .documents import MAX_FILE, save_upload
@@ -78,6 +78,34 @@ def public_company(company):
     return {k: v for k, v in company.items() if k != "keys"}
 
 
+def public_doc(doc):
+    return {k: v for k, v in doc.items() if k != "text"}
+
+
+def public_job(job):
+    """A job for the dashboard, without the posting text and the form snapshot it never shows (the state is
+    polled every second while something runs, so the payload matters)."""
+    job = {k: v for k, v in job.items() if k != "description"}
+    if job.get("package") and "snapshot" in job["package"]:
+        job["package"] = {k: v for k, v in job["package"].items() if k != "snapshot"}
+    return job
+
+
+async def optional_json(request):
+    return await request.json() if int(request.headers.get("content-length") or 0) else {}
+
+
+_tools = {}
+
+
+def tool_available(name, probe, ttl=60):
+    """Whether a command-line tool is installed, re-checked at most once a minute (the state is polled every second)."""
+    found = _tools.get(name)
+    if not found or found[0] < time.monotonic():
+        found = _tools[name] = (time.monotonic() + ttl, bool(probe()))
+    return found[1]
+
+
 def create_app(data_dir=None):
     store = Store(data_dir)
     browser = Browser(store)
@@ -87,6 +115,10 @@ def create_app(data_dir=None):
     networking = Networking(store, browser, workflow)
     sync = Sync(store, lambda: secret("sync_passphrase"))
     token = secrets.token_urlsafe(40)
+
+    def sync_later():
+        if store.settings()["sheet_sync_enabled"]:
+            asyncio.create_task(sheets.sync())
 
     @asynccontextmanager
     async def lifespan(app):
@@ -138,13 +170,13 @@ def create_app(data_dir=None):
 
     @app.get("/api/state")
     async def state():
-        docs = [{k: v for k, v in d.items() if k != "text"} for d in store.documents()]
+        docs = store.documents(with_text=False)
         ingested = store.get("profile_sources", {})
         for d in docs:
             d["ingested"] = ingested.get(d["id"], {}).get("sha256") == d.get("sha256")
         proposals = [store.get("ingest:" + d["id"]) for d in docs]
         jobs = store.jobs()
-        return {"jobs": jobs, "documents": docs, "profile": store.profile(), "followups": followups.board(jobs),
+        return {"jobs": [public_job(j) for j in jobs], "documents": docs, "profile": store.profile(), "followups": followups.board(jobs),
                 "proposals": [p for p in proposals if p],
                 "companies": [{**public_company(c), "history": followups.company_history(c, jobs)} for c in store.companies()],
                 "settings": store.settings(),
@@ -153,13 +185,14 @@ def create_app(data_dir=None):
                 "batch_running": bool(workflow.batch_task and not workflow.batch_task.done()),
                 "events": store.events(), "sheet_fields": FIELDS, "networking": networking.summary(), "sync": sync.state(),
                 "discovered": store.get("discovered", {}), "discover_last": store.get("discover_last"),
-                "capabilities": {"latex": bool(shutil.which("tectonic") or shutil.which("pdflatex")),
+                "capabilities": {"latex": tool_available("latex", lambda: shutil.which("tectonic") or shutil.which("pdflatex")),
                                  "anthropic_key": bool(secret("anthropic_key")), "sync_passphrase": bool(secret("sync_passphrase")),
-                                 "codex": bool(shutil.which("codex") or os.path.exists("/opt/homebrew/bin/codex")), "tracker_connected": sheets.connected()}}
+                                 "codex": tool_available("codex", codex_path), "tracker_connected": sheets.connected()}}
 
     @app.post("/api/jobs")
     async def import_jobs(body: ImportJobs):
         imported, duplicates, errors = [], [], []
+        found = store.get("discovered", {})
         for url in body.urls:
             try:
                 job, created = store.add_job(url)
@@ -170,11 +203,9 @@ def create_app(data_dir=None):
                     if body.mode in {"assisted", "autonomous"}:
                         store.setup_questions(company["id"], job["id"])
                 (imported if created else duplicates).append(job["id"])
-                found = store.get("discovered", {})
-                if job["url"] in found or url.split("?")[0].rstrip("/") in found:
-                    found.pop(job["url"], None)
-                    found.pop(url.split("?")[0].rstrip("/"), None)
-                    store.set("discovered", found)
+                for key in (job["url"], url.split("?")[0].rstrip("/")):  # added from the new-postings panel
+                    if found.pop(key, None) is not None:
+                        store.set("discovered", found)
             except ValueError as exc:
                 errors.append({"url": url, "error": str(exc)})
         return {"imported": imported, "duplicates": duplicates, "errors": errors}
@@ -224,8 +255,8 @@ def create_app(data_dir=None):
         store.event(job["id"], f"Recorded as applied on {applied_at}." if body.stage == "applied" else "Saved to apply later.")
         if not job.get("description"):
             workflow.start(job["id"], "research")  # fills title, company and deadline in the background
-        elif store.settings()["sheet_sync_enabled"]:
-            asyncio.create_task(sheets.sync())
+        else:
+            sync_later()
         return store.job(job["id"])
 
     @app.patch("/api/jobs/{jid}")
@@ -282,8 +313,7 @@ def create_app(data_dir=None):
         job = store.update(jid, {"status": "applied", "mode": job.get("mode") or "manual", "submitted_at": now()[:10],
                                  "confirmation": "Applied myself", "error": ""}, invalidate=False)
         store.event(jid, f"Recorded as applied on {job['submitted_at']}.")
-        if store.settings()["sheet_sync_enabled"]:
-            asyncio.create_task(sheets.sync())
+        sync_later()
         return job
 
     @app.post("/api/jobs/{jid}/answer")
@@ -382,8 +412,7 @@ def create_app(data_dir=None):
     @app.post("/api/documents")
     async def upload(kind: str = Form(...), file: UploadFile = File(...)):
         data = await file.read(MAX_FILE + 1)
-        doc = save_upload(store, file.filename or "upload.txt", kind, data)
-        return {k: v for k, v in doc.items() if k != "text"}
+        return public_doc(save_upload(store, file.filename or "upload.txt", kind, data))
 
     @app.get("/api/documents/{did}/text")
     async def document_text(did: str):
@@ -396,8 +425,7 @@ def create_app(data_dir=None):
     async def portfolio(request: Request):
         body = await request.json()
         page = await fetch_text(body["url"])
-        doc = save_upload(store, "portfolio.txt", "supporting", (page["url"] + "\n" + page["text"]).encode())
-        return {k: v for k, v in doc.items() if k != "text"}
+        return public_doc(save_upload(store, "portfolio.txt", "supporting", (page["url"] + "\n" + page["text"]).encode()))
 
     @app.get("/api/profile/doc")
     async def profile_doc():
@@ -552,9 +580,7 @@ def create_app(data_dir=None):
         for field, low, high in [("ollama_context", 4096, 32768), ("ollama_timeout", 120, 1800)]:
             if type(settings[field]) is not int or not low <= settings[field] <= high:
                 raise ValueError(f"{field} must be an integer between {low} and {high}.")
-        from urllib.parse import urlsplit
-        if urlsplit(settings["ollama_url"]).hostname not in {"localhost", "127.0.0.1", "::1"}:
-            raise ValueError("Ollama must use a local address.")
+        local_base(settings)  # raises unless the Ollama address is local
         if not 1 <= int(settings["max_model_calls"]) <= 100 or not 256 <= int(settings["max_output_tokens"]) <= 16000:
             raise ValueError("Model limits are outside the supported range.")
         phone = re.sub(r"\D", "", str(settings["text_phone"]))
@@ -631,13 +657,13 @@ def create_app(data_dir=None):
 
     @app.post("/api/networking/research")
     async def networking_research(request: Request):
-        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        body = await optional_json(request)
         ids = [i for i in body.get("ids", []) if isinstance(i, str)] or None
         return {"started": workflow.start_networking("research", ids)}
 
     @app.post("/api/networking/drafts")
     async def networking_drafts(request: Request):
-        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        body = await optional_json(request)
         ids = [i for i in body.get("ids", []) if isinstance(i, str)] or None
         return {"started": workflow.start_networking("drafts", ids)}
 
@@ -687,7 +713,7 @@ def create_app(data_dir=None):
 
     @app.post("/api/monitor/run")
     async def monitor_run(request: Request):
-        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        body = await optional_json(request)
         return await monitor.run(days=int(body.get("days", 7)) if body.get("days") else None)
 
     @app.post("/api/jobs/{jid}/action-done")
@@ -709,8 +735,8 @@ def create_app(data_dir=None):
         else:
             store.event(jid, "You dismissed the suggested status change.")
         job = store.update(jid, changes, invalidate=False)
-        if body.get("accept") and store.settings()["sheet_sync_enabled"]:
-            asyncio.create_task(sheets.sync())
+        if body.get("accept"):
+            sync_later()
         return job
 
     @app.post("/api/jobs/{jid}/followup/draft")
@@ -732,8 +758,7 @@ def create_app(data_dir=None):
         job = store.update(jid, {"follow_ups": sent, "followup_draft": None, "last_contact_at": at,
                                  "followup_at": followups.cadence({**job, "follow_ups": sent})["next_at"]}, invalidate=False)
         store.event(jid, f"Follow-up {len(sent)} recorded as sent on {at}.")
-        if store.settings()["sheet_sync_enabled"]:
-            asyncio.create_task(sheets.sync())
+        sync_later()
         return job
 
     @app.get("/api/tracker/script")

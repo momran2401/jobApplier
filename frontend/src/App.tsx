@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {ArrowUpRight, Check, CircleAlert, ClipboardCheck, Link2, LoaderCircle, Mail, Plus, Radar, RefreshCw, Search, ShieldCheck, Square, X} from 'lucide-react';
-import {ago, api, date, hasToken, labels, Obj, setToken} from './api';
+import {ago, api, date, hasToken, labels, Obj, pad, setToken} from './api';
 import {Button, Logo} from './ui';
 import {Profile} from './screens/Profile';
 import {Companies} from './screens/Companies';
@@ -15,7 +15,6 @@ const readMode = (): 'applier' | 'tracker' => {try {return localStorage.getItem(
 const greeting = () => {const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : h < 22 ? 'Good evening' : 'Working late';};
 const dateLong = () => new Date().toLocaleDateString(undefined, {weekday: 'long', month: 'long', day: 'numeric'});
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
-const pad = (n: number) => n.toString().padStart(2, '0');
 
 export default function App() {
   const lastState = useRef('');
@@ -83,10 +82,12 @@ export default function App() {
   };
   const approveSelected = async () => {
     const approved = [];
+    const current: Obj[] = (await api('/state')).jobs;  // fresh revisions, once for the whole selection
     for (const id of selected) {
-      let job = (await api('/state')).jobs.find((j: Obj) => j.id === id);
-      if (job.status !== 'approved') job = await api(`/jobs/${id}/approve`, 'POST', {revision: job.revision});
-      approved.push(job.id);
+      const job = current.find((j: Obj) => j.id === id);
+      if (!job) continue;
+      if (job.status !== 'approved') await api(`/jobs/${id}/approve`, 'POST', {revision: job.revision});
+      approved.push(id);
     }
     await api('/submit', 'POST', {ids: approved});
     setSelected([]);

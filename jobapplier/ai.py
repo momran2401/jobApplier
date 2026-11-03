@@ -34,6 +34,13 @@ FORM_PAUSE = ("Claude credits are exhausted. Form filling pauses rather than usi
               "Add API credits, then resume.")
 OLLAMA_APP = Path("/Applications/Ollama.app")
 OLLAMA_ENV = {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0"}
+# Hosted providers (Codex, Claude) take parallel requests; the local model is one process on one GPU, so tasks the
+# workflow runs side by side queue here instead of fighting for memory.
+LOCAL_LOCK = asyncio.Lock()
+
+
+def codex_path():
+    return shutil.which("codex") or ("/opt/homebrew/bin/codex" if Path("/opt/homebrew/bin/codex").exists() else None)
 
 
 def _client(key):
@@ -93,6 +100,7 @@ class Model:
         self.using_fallback = False
         self.pause_message = FORM_PAUSE
         self.on_activity = on_activity
+        self.active = 0  # calls in flight; the live view is cleared when the last one finishes
 
     def activity(self, **state):
         """Report what the model is doing right now for the live progress view; no arguments clears it."""
@@ -101,6 +109,8 @@ class Model:
         # Keep the phase's start time across token updates so the timer measures the whole phase.
         if state.get("phase") != getattr(self, "_phase", None):
             self._phase, self._since = state.get("phase"), now()
+        if not state and self.active:
+            return  # another call is still running; keep showing its phase
         self.on_activity({**state, "since": self._since} if state else None)
 
     async def json(self, task, data, stable=None, local_ok=True, fast=False):
@@ -115,9 +125,11 @@ class Model:
         self.calls += 1
         if self.calls > (self.max_calls or int(settings["max_model_calls"])):
             raise ValueError("This run reached its model-call limit. Review progress before resuming.")
+        self.active += 1
         try:
             content, usage, provider, model = await self._infer(settings, task, data, stable, local_ok, fast)
         finally:
+            self.active -= 1
             self.activity()
         self.store.set("last_inference", {"provider": provider, "model": model,
                                           "fallback": self.using_fallback, "at": now()})
@@ -171,7 +183,7 @@ class Model:
         messages = [{"role": "system", "content": SYSTEM + "\n" + task},
                     {"role": "user", "content": _dump({**(stable or {}), **data})}]
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with LOCAL_LOCK, httpx.AsyncClient(timeout=120) as client:
                 content, usage = await self.ollama(client, settings, messages, model)
         except httpx.HTTPStatusError as exc:
             reason = (f"{model} isn't installed. Run: ollama pull {model}" if exc.response.status_code == 404
@@ -192,7 +204,7 @@ class Model:
     async def codex(self, settings, task, data, stable, model):
         """One answer from the Codex CLI signed in with your ChatGPT account (codex exec, non-interactive).
         It runs read-only in an empty temporary folder and saves no session, so it only sees the prompt."""
-        exe = shutil.which("codex") or ("/opt/homebrew/bin/codex" if Path("/opt/homebrew/bin/codex").exists() else None)
+        exe = codex_path()
         if not exe:
             raise ValueError("Install the Codex CLI (brew install codex) and run `codex login` with your ChatGPT account.")
         prompt = (SYSTEM + "\n" + task + "\n\nDo not run commands or read files. Answer only from the input below, "

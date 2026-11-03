@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import json
 import re
+from datetime import date
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -10,12 +12,13 @@ from . import fit as fitmod
 from . import profile as profiledoc
 from . import voice
 from .ai import Model
-from .discover import cooling_down
+from .discover import CLOSED_TEXT, cooling_down
 from .documents import build_letter, build_resume, main_tex, validate_edits
 from .factcheck import check as fact_check
 from .factcheck import describe as fact_describe
 from .followups import FOLLOWUP_TASK, cadence
 from .knockout import scan as knockout_scan
+from .logos import ensure_logo
 from .match import match_report, skill_gaps
 from .security import company_credential, public_url
 from .store import now, package_hash, submission_block
@@ -24,10 +27,9 @@ from .store import now, package_hash, submission_block
 def job_posting(soup):
     """Schema.org JobPosting from the page's JSON-LD, when the site publishes one (most ATS pages do). Structured
     fields beat guessing from page text, and the description survives on pages that render the rest with JavaScript."""
-    import json as _json
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
-            data = _json.loads(tag.string or "")
+            data = json.loads(tag.string or "")
         except ValueError:
             continue
         items = data if isinstance(data, list) else data.get("@graph", [data]) if isinstance(data, dict) else []
@@ -55,7 +57,7 @@ async def fetch_text(url):
             await asyncio.to_thread(public_url, url)
             async with client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0 JobApplier/0.1"}) as r:
                 if r.is_redirect:
-                    url = urljoin(url, r.headers["location"])
+                    url = urljoin(url, r.headers.get("location", ""))
                     continue
                 if r.status_code in {404, 410}:
                     raise PostingGone(f"The posting returns HTTP {r.status_code}: it has been taken down.")
@@ -83,7 +85,7 @@ ACTIONS = {"fill": "Filling a field", "select": "Choosing an option", "check": "
 STAGES = {"research": ["Reading posting", "Analyzing requirements"],
           "prepare": ["Checking tracker", "Opening browser", "Reading posting", "Tailoring resume",
                       "Filling application", "Final review"],
-          "advise": ["Reading posting", "Researching company", "Tailoring resume", "Drafting cover letter", "Preparing advice"],
+          "advise": ["Reading posting", "Researching company", "Tailoring and drafting", "Preparing advice"],
           "autonomous": ["Checking tracker", "Opening browser", "Reading posting", "Tailoring resume",
                          "Filling application", "Final review", "Submitting"]}
 
@@ -133,7 +135,6 @@ def mentions_letter(job):
 
 
 def letter_date():
-    from datetime import date
     d = date.today()
     return f"{d:%B} {d.day}, {d.year}"
 
@@ -171,6 +172,12 @@ class Workflow:
         self.cancelled = set()
         self.batch_task = None
 
+    def begin(self, key, operation, stages_key, detail=""):
+        """Open the live progress entry for a background run; `run`-style callers pop it when they finish."""
+        stages = STAGES[stages_key]
+        self.progress[key] = {"operation": operation, "stages": stages, "stage": stages[0], "stage_index": 0,
+                              "detail": detail, "step": None, "model": None, "started": now(), "stage_started": now()}
+
     def start_ingest(self, did):
         """Background task: propose profile additions from one document. Result lands in kv ingest:<did>."""
         key = "ingest:" + did
@@ -182,9 +189,7 @@ class Workflow:
         self.tasks[key] = asyncio.create_task(self._run_ingest(key, doc))
 
     async def _run_ingest(self, key, doc):
-        stages = STAGES["ingest"]
-        self.progress[key] = {"operation": "ingest", "stages": stages, "stage": stages[0], "stage_index": 0,
-                              "detail": doc["name"], "step": None, "model": None, "started": now(), "stage_started": now()}
+        self.begin(key, "ingest", "ingest", doc["name"])
         try:
             proposal = await self.ingest_document(doc, key)
             self.store.set(key, proposal)
@@ -225,9 +230,7 @@ class Workflow:
         if any(k.startswith("networking:") and not t.done() for k, t in self.tasks.items()):
             raise ValueError("A networking run is already in progress.")
         networking = Networking(self.store, self.browser, self)
-        stages = STAGES[key]
-        self.progress[key] = {"operation": "networking", "stages": stages, "stage": stages[0], "stage_index": 0,
-                              "detail": "", "step": None, "model": None, "started": now(), "stage_started": now()}
+        self.begin(key, "networking", key)
 
         async def run():
             try:
@@ -252,13 +255,12 @@ class Workflow:
         self.tasks[jid] = asyncio.create_task(self._run_followup(jid, state))
 
     async def _run_followup(self, jid, state):
-        stages = STAGES["followup"]
-        self.progress[jid] = {"operation": "followup", "stages": stages, "stage": stages[0], "stage_index": 0,
-                              "detail": "", "step": None, "model": None, "started": now(), "stage_started": now()}
+        self.begin(jid, "followup", "followup")
         try:
             job = self.store.job(jid)
             profile = self.store.profile_text()
             model = self.model(jid)
+            sources = self.sources(profile, job)
             email = job.get("last_email") if isinstance(job.get("last_email"), dict) else None
             data = {"role": job.get("title", ""), "company": job.get("company", ""), "applied_on": (job.get("submitted_at") or "")[:10],
                     "requirements": job.get("requirements") or [], "previous_follow_ups": [f.get("text", "")[:600] for f in job.get("follow_ups") or []],
@@ -269,7 +271,7 @@ class Workflow:
             found = await model.json(FOLLOWUP_TASK + "\n" + VOICE, data, stable=stable)
             subject, body = plain(found.get("subject") or ""), plain(found.get("body") or "")
             self.stage(jid, "Checking draft", "Fact-checking and reading the tone")
-            facts = fact_check(body, self.sources(profile, job))
+            facts = fact_check(body, sources)
             tone = voice.check(body)
             if facts["blocking"] or tone:
                 problems = facts["blocking"] + tone
@@ -279,7 +281,7 @@ class Workflow:
                 candidate = plain(found.get("body") or "")
                 if candidate:
                     subject, body = plain(found.get("subject") or subject), candidate
-                    facts, tone = fact_check(body, self.sources(profile, job)), voice.check(body)
+                    facts, tone = fact_check(body, sources), voice.check(body)
             draft = {"subject": subject[:200], "body": body[:2500], "check": {**facts, "voice": tone}, "drafted_at": now(), "number": state["count"] + 1}
             self.store.update(jid, {"followup_draft": draft}, invalidate=False)
             self.store.event(jid, f"Follow-up {draft['number']} drafted. Nothing was sent; review it in the drawer.")
@@ -321,9 +323,7 @@ class Workflow:
         return Model(self.store, jid, on_activity=activity)
 
     async def run(self, jid, operation):
-        stages = STAGES[operation]
-        self.progress[jid] = {"operation": operation, "stages": stages, "stage": stages[0], "stage_index": 0,
-                              "detail": "", "step": None, "model": None, "started": now(), "stage_started": now()}
+        self.begin(jid, operation, operation)
         prior = self.store.job(jid)["status"]
         stopped = False
         try:
@@ -380,7 +380,6 @@ class Workflow:
             raise ValueError(str(exc)) from None
         posting = page.get("posting") or {}
         status = "open"
-        from .discover import CLOSED_TEXT
         if CLOSED_TEXT.search(page["text"][:6000]):
             status = "closed"
         elif posting.get("valid_through") and posting["valid_through"] < now()[:10]:
@@ -389,14 +388,18 @@ class Workflow:
             self.stage(jid, "Analyzing requirements", "Extracting requirements and checking fit")
         else:
             self.detail(jid, "Extracting requirements and checking fit")
-        result = await model.json("""Extract this job posting. Return JSON with company, title, requisition_id,
+        profile = self.store.profile_text()
+        extract = model.json("""Extract this job posting. Return JSON with company, title, requisition_id,
         location, deadline (ISO date or empty), posting_kind (opening or expression_of_interest),
         requirements (at most 12, each under 12 words), fit_flags (array of concrete conflicts OR missing eligibility
         facts), summary (max 2 sentences). Compare to profile only when it has information. Do not give an ATS score.
         Empty strings for unknown facts. Do not treat site navigation or other job listings as this job.
         Be concise: no explanations outside the JSON.""",
-                                  {"url": job["url"], "page": page}, stable={"profile": self.store.profile_text()},
-                                  fast=True)
+                             {"url": job["url"], "page": page}, stable={"profile": profile}, fast=True)
+        # The fit evaluation reads the same page and needs nothing from the extraction, so both run at once:
+        # one round trip instead of two on Codex and Claude (the local model queues them).
+        fit = fitmod.evaluate(model, profile, {**job, "description": page["text"]}) if self.store.settings().get("fit_enabled", True) else None
+        result, report = await asyncio.gather(extract, fit) if fit else (await extract, None)
         fields = {k: result.get(k, "") for k in ("company", "title", "requisition_id", "location", "deadline", "posting_kind", "summary")}
         for ours, theirs in (("title", "title"), ("company", "company"), ("location", "location"), ("deadline", "valid_through")):
             if posting.get(theirs):  # the site's own structured data wins over the model's reading
@@ -408,20 +411,19 @@ class Workflow:
             self.store.event(jid, "This posting looks " + status + ". Check the page before spending time on it.")
         self.store.update(jid, fields)
         company = self.store.link_job_company(jid)
-        from .logos import ensure_logo
         asyncio.create_task(ensure_logo(self.store, company))
-        await self.evaluate_fit(jid, model, company)
+        self.evaluate_fit(jid, company, report)
 
-    async def evaluate_fit(self, jid, model, company):
-        """Score the posting against the profile and record the gates that need your acknowledgment: hard stops,
-        a company you marked do-not-apply, an application to the same employer inside the cooldown window."""
+    def evaluate_fit(self, jid, company, report):
+        """Record the fit report and the gates that need your acknowledgment: hard stops, a company you marked
+        do-not-apply, an application to the same employer inside the cooldown window."""
         settings = self.store.settings()
         job = self.store.job(jid)
         flags = list(job.get("fit_flags") or [])
         changes = {}
-        if settings.get("fit_enabled", True):
-            self.detail(jid, "Scoring how well the posting fits your profile")
-            report = await fitmod.evaluate(model, self.store.profile_text(), job, job.get("requirements") or [])
+        if report:
+            if not report["requirements"] and job.get("requirements"):  # the model listed none; show the extracted ones
+                report["requirements"] = fitmod.shape({}, job["requirements"])["requirements"]
             changes.update(fitmod.job_fields(report))
             flags += [s for s in report.get("hard_stops") or [] if s not in flags]
             if report.get("score") is not None:
@@ -438,7 +440,7 @@ class Workflow:
 
     async def tailor(self, jid, model, profile, meta, job, edits=None):
         """Skills tailoring + resume build shared by Advisor and AI Applier. Returns the package core."""
-        source = next((d for d in self.store.documents() if d["kind"] == "latex"), None)
+        source = self.store.document_by_kind("latex")
         resume_source = ""
         if source:
             path = self.store.root / "documents" / source["id"] / "project" / main_tex(source, self.store.settings())
@@ -471,31 +473,29 @@ class Workflow:
 
     def sources(self, profile, job):
         """Everything a generated text may draw facts from: the profile, the posting, the company research."""
-        import json as _json
-        return [profile, job.get("description") or "", " ".join(job.get("requirements") or []), _json.dumps(self.company_brief(job))]
+        return [profile, job.get("description") or "", " ".join(job.get("requirements") or []), json.dumps(self.company_brief(job))]
 
-    async def write_letter(self, jid, model, task, data, profile, job, stable):
-        """Draft a letter, fact-check it, give the model one chance to drop unsupported claims, then decide:
-        a letter with unsupported numbers is never used; unverified names are shown to the reviewer."""
+    async def write_letter(self, jid, model, task, data, sources, stable):
+        """Draft a letter and check it (facts and voice). One rewrite covers every problem found, then the checks
+        run again: a letter with unsupported numbers is never used; unverified names are shown to the reviewer."""
         found = await model.json(task, data, stable=stable)
         letter = plain(found.get("letter") or "")
-        result = fact_check(letter, self.sources(profile, job))
-        if result["blocking"] or result["warnings"]:
-            self.detail(jid, "Fact-checking the letter: asking for a rewrite without " + ", ".join((result["blocking"] + result["warnings"])[:5]))
-            found = await model.json(task + "\nThe previous draft contained claims that are not in the profile or posting; remove or replace them: "
-                                     + ", ".join(result["blocking"] + result["warnings"]) + ". Return the full corrected letter.",
-                                     {**data, "previous_draft": letter}, stable=stable)
-            letter = plain(found.get("letter") or letter)
-            result = fact_check(letter, self.sources(profile, job))
-        tone = voice.check(letter)
-        if tone:
-            self.detail(jid, "Rewriting the letter in a plainer voice: " + voice.describe(tone))
-            found = await model.json(task + "\n" + voice.rewrite_instruction(tone) + " Return the full corrected letter.",
+        result, tone = fact_check(letter, sources), voice.check(letter)
+        problems = result["blocking"] + result["warnings"]
+        if problems or tone:
+            fix = []
+            if problems:
+                fix.append("The previous draft contained claims that are not in the profile or posting; remove or replace them: " + ", ".join(problems) + ".")
+            if tone:
+                fix.append(voice.rewrite_instruction(tone))
+            self.detail(jid, "Asking for one rewrite of the letter: " + ", ".join((problems + tone)[:5]))
+            found = await model.json(task + "\n" + " ".join(fix) + " Return the full corrected letter.",
                                      {**data, "previous_draft": letter}, stable=stable)
             candidate = plain(found.get("letter") or "")
-            if candidate and not fact_check(candidate, self.sources(profile, job))["blocking"]:
-                letter = candidate
-                result = fact_check(letter, self.sources(profile, job))
+            checked = fact_check(candidate, sources) if candidate else None
+            # A rewrite that still carries unsupported numbers is no better than the draft; keep whichever is clean.
+            if candidate and (not checked["blocking"] or result["blocking"]):
+                letter, result = candidate, checked
             tone = voice.check(letter)
         result["voice"] = tone
         return letter, result
@@ -539,30 +539,34 @@ class Workflow:
             job = self.store.job(jid)
         self.stage(jid, "Researching company", "Looking up the employer")
         company = await self.research_company(jid, model)
-        self.stage(jid, "Tailoring resume", "Choosing and ordering skills for this role")
+        sources = self.sources(profile, job)
         package = dict(job.get("package") or {})
-        core = await self.tailor(jid, model, profile, meta, job)
-        package.update(core)
-        letter = ""
         wants_letter = mentions_letter(job) or self.store.settings().get("always_letter")
-        self.stage(jid, "Drafting cover letter", "Drafting" if wants_letter else "No cover letter mentioned; skipping")
-        if wants_letter:
-            template = next((d for d in self.store.documents() if d["kind"] == "cover_template"), None)
-            letter, checked = await self.write_letter(jid, model, """Draft a cover letter for this job (3-4 short paragraphs, plain text, no placeholders).
+        # The three drafting tasks only share the posting and the profile, so they run side by side.
+        self.stage(jid, "Tailoring and drafting", "Choosing skills" + (", drafting the cover letter" if wants_letter else "") + " and anticipating questions")
+        stable = {"profile": profile, "job": job["description"]}
+
+        async def letter_task():
+            if not wants_letter:
+                return "", None
+            template = self.store.document_by_kind("cover_template")
+            return await self.write_letter(jid, model, """Draft a cover letter for this job (3-4 short paragraphs, plain text, no placeholders).
             Use only facts from the profile; do not invent personal connections or company facts beyond the research given.
             Follow the template's structure and tone when one is given. Return {"letter": "..."}.
-            """ + VOICE, {"template": (template or {}).get("text", "")}, profile, job,
-                                                      stable={"profile": profile, "job": job["description"], "company": company.get("research") or {}})
+            """ + VOICE, {"template": (template or {}).get("text", "")}, sources, stable={**stable, "company": company.get("research") or {}})
+        core, (letter, checked), found = await asyncio.gather(
+            self.tailor(jid, model, profile, meta, job, edits=package.get("accepted_edits")), letter_task(),
+            model.json(QUESTIONS_TASK, {"requirements": job.get("requirements", [])}, stable=stable, fast=True))
+        package.update(core)
+        if wants_letter:
             package["letter"] = letter
             package["letter_check"] = checked
             package["letter_hash"] = hashlib.sha256(letter.encode()).hexdigest()
             package["letter_pdf"] = await build_letter(self.store, jid, letter, profiledoc.identity(profile), letter_date()) if letter else None
-        self.stage(jid, "Preparing advice", "Anticipating application questions")
-        found = await model.json(QUESTIONS_TASK, {"requirements": job.get("requirements", [])},
-                                 stable={"profile": profile, "job": job["description"]}, fast=True)
+        self.stage(jid, "Preparing advice", "Fact-checking the answers")
         questions = [q for q in (found.get("questions") or []) if isinstance(q, dict) and q.get("question")][:10]
         for q in questions:
-            checked = fact_check(str(q.get("answer") or ""), self.sources(profile, job))
+            checked = fact_check(str(q.get("answer") or ""), sources)
             if checked["blocking"] or checked["warnings"]:
                 q["check"] = fact_describe(checked)
                 if checked["blocking"]:
@@ -729,8 +733,7 @@ class Workflow:
         package["form_ready"] = False
         package["unresolved"] = []
         attachments = {"resume": str(self.store.root / package["resume"]["path"])}
-        docs = self.store.documents()
-        transcript = next((d for d in docs if d["kind"] == "transcript"), None)
+        transcript = self.store.document_by_kind("transcript")
         if transcript:
             attachments["transcript"] = str(self.store.root / transcript["path"])
             package["attachments"] = [transcript]
@@ -756,13 +759,13 @@ class Workflow:
                 continue
             self.prescan(jid, package, page, snapshot, answers)
             if (LETTER_RE.search(alltext) or mentions_letter(job)) and not package["letter"]:
-                template = next((d for d in docs if d["kind"] == "cover_template"), None)
+                template = self.store.document_by_kind("cover_template")
                 if template:
                     self.detail(jid, "Drafting the cover letter")
                     letter, checked = await self.write_letter(jid, model, """Draft a cover letter using the supplied template's structure and tone.
                     Use only verified experience; do not invent personal connections or company facts.
                     Return {"letter": "plain text letter"}. No Markdown or LaTeX.
-                    """ + VOICE, {"template": template["text"]}, profile, job, stable={"profile": profile, "job": job["description"]})
+                    """ + VOICE, {"template": template["text"]}, self.sources(profile, job), stable={"profile": profile, "job": job["description"]})
                     package["letter_check"] = checked
                     if checked["blocking"]:  # never attach a letter with numbers the profile does not back
                         package["unresolved"] = ["The drafted cover letter contains claims not in your profile (" + fact_describe(checked) + "). Add the facts to your profile or write the letter yourself, then resume."]

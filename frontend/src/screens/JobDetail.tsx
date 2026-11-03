@@ -107,13 +107,14 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
         </>}
 
         {view === 'materials' && (!p ? <Empty title="No materials yet">Prepare this opportunity after saving your verified profile.</Empty> : <>
-          <div className="sub-panel"><div className="sub-head"><h3>Exact resume PDF</h3><a className="text-link" href={'/api/file/' + p.resume.path} target="_blank" rel="noreferrer">Open PDF <ExternalLink size={12}/></a></div>
+          {p.resume ? <div className="sub-panel"><div className="sub-head"><h3>Exact resume PDF</h3><a className="text-link" href={'/api/file/' + p.resume.path} target="_blank" rel="noreferrer">Open PDF <ExternalLink size={12}/></a></div>
             {p.resume.warning && <div className="hint warn">{p.resume.warning}</div>}
             <iframe title="Prepared resume preview" className="pdf" src={'/api/file/' + p.resume.path}/>
             <div className="small muted">{p.resume.pages} page(s) · Version {p.resume.sha256.slice(0, 10)}</div></div>
+            : <div className="hint"><span>The resume will be rebuilt with your accepted edits on the next preparation.</span></div>}
           {p.selected_skills?.length > 0 && <div className="sub-panel"><h3>Skills selected for this role</h3><div className="skill-cloud">{p.selected_skills.map((s: string) => <span key={s}>{s}</span>)}</div></div>}
           <SkillGaps gaps={p.skill_gaps}/>
-          {p.resume.diff && <div className="sub-panel"><h3>What changed</h3><pre className="diff">{p.resume.diff}</pre></div>}
+          {p.resume?.diff && <div className="sub-panel"><h3>What changed</h3><pre className="diff">{p.resume.diff}</pre></div>}
           {p.suggested_edits?.length > 0 && <EditsPanel job={job} p={p} run={run} busy={busy} locked={locked}/>}
           {p.letter && <div className="sub-panel"><h3>Cover-letter draft</h3><FactCheck c={p.letter_check}/><div className="letter">{p.letter}</div></div>}
           {canReview && !p.visual_reviewed && <Button primary disabled={!!busy} onClick={() => run('review', () => api(`/jobs/${job.id}/review`, 'POST', {revision: job.revision}), 'Document review recorded.')}><CheckCheck size={15}/>I’ve reviewed the PDF and its layout</Button>}
