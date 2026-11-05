@@ -1,5 +1,13 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {ArrowUpRight, Check, CircleAlert, ClipboardCheck, Link2, LoaderCircle, Mail, Plus, Radar, RefreshCw, Search, ShieldCheck, Square, X} from 'lucide-react';
+
+type Theme = 'light' | 'dark';
+const readTheme = (): Theme => {try {return localStorage.getItem('theme') === 'dark' ? 'dark' : 'light';} catch {return 'light';}};
+function applyTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#13110f' : '#f4efe6');
+  try {localStorage.setItem('theme', theme);} catch {/* private mode */}
+}
+import {ArrowUpRight, Check, CircleAlert, ClipboardCheck, Link2, LoaderCircle, Mail, Moon, Plus, Radar, RefreshCw, Search, ShieldCheck, Square, Sun, X} from 'lucide-react';
 import {ago, api, date, hasToken, labels, Obj, pad, setToken} from './api';
 import {Button, Logo} from './ui';
 import {Profile} from './screens/Profile';
@@ -20,6 +28,8 @@ export default function App() {
   const lastState = useRef('');
   const [state, setState] = useState<Obj | null>(null), [screen, setScreen] = useState('applications'), [filter, setFilter] = useState('all');
   const [mode, setModeState] = useState<'applier' | 'tracker'>(readMode);
+  const [theme, setTheme] = useState<Theme>(readTheme);
+  useEffect(() => applyTheme(theme), [theme]);
   const setMode = (m: 'applier' | 'tracker') => {setModeState(m); try {localStorage.setItem('mode', m);} catch {}};
   const [query, setQuery] = useState(''), [selected, setSelected] = useState<string[]>([]), [detail, setDetail] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false), [logOpen, setLogOpen] = useState(false), [importMode, setImportMode] = useState(''), [links, setLinks] = useState(''), [busy, setBusy] = useState(''), [notice, setNotice] = useState(''), [error, setError] = useState('');
@@ -129,6 +139,7 @@ export default function App() {
           onClick={() => run('monitor', async () => {const r = await api('/monitor/run', 'POST', {}); setNotice(`Email checked: ${plural(r.checked, 'new message')}, ${plural(r.updated, 'application')} updated.`);})}>
           <Mail size={15} className={busy === 'monitor' || state.monitor?.running ? 'spin' : ''}/></button>
         <button className="round" title="Refresh" aria-label="Refresh workspace" onClick={() => run('refresh', refresh)}><RefreshCw size={15} className={busy === 'refresh' ? 'spin' : ''}/></button>
+        <button className="round" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={15}/> : <Moon size={15}/>}</button>
       </div>
       {tracker ? <button className="cream" onClick={() => setLogOpen(true)}><ClipboardCheck size={15}/>Log application</button>
         : <button className="cream" onClick={() => setImportOpen(true)}><Plus size={15}/>Add job links</button>}
