@@ -28,7 +28,7 @@ export function Settings({state, run, busy}: PanelProps) {
         <label className="field">Autonomous: park jobs scoring below<input type="number" min={1} max={5} step={0.1} value={s.fit_threshold ?? 3.5} onChange={e => set('fit_threshold', Number(e.target.value))}/></label>
         <label className="field">Warn before applying to the same company again within (days; 0 = never)<input type="number" min={0} max={365} value={s.reapply_cooldown_days ?? 90} onChange={e => set('reapply_cooldown_days', Number(e.target.value))}/></label>
         <label className="check" style={{alignSelf: 'end'}}><input type="checkbox" checked={s.followups_enabled !== false} onChange={e => set('followups_enabled', e.target.checked)}/>Track follow-ups and draft them in Tracker mode (you send them yourself)</label>
-        <label className="check"><input type="checkbox" checked={!!s.match_enabled} onChange={e => set('match_enabled', e.target.checked)}/>Score each tailored resume (HackerRank's open-source rubric + requirement coverage; one extra AI call)</label>
+        <label className="check"><input type="checkbox" checked={!!s.match_enabled} onChange={e => set('match_enabled', e.target.checked)}/>Also run HackerRank's intern-triage rubric on each tailored resume (one extra AI call per job; scores swing 10 to 15 points between runs and the rubric is tuned to HackerRank's own intern posting, so treat it as a preview, not a verdict)</label>
         <label className="check"><input type="checkbox" checked={!!s.match_github} onChange={e => set('match_github', e.target.checked)}/>Include public GitHub signals from the GitHub link in your profile</label>
       </div>
     </Panel>

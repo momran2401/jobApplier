@@ -114,7 +114,7 @@ are listed. Wording suggestions for experience bullets are shown side by side. I
 ones to apply; they go into that application's copy only. Your master resume is never modified.
 
 **Cover letters** are written when the posting mentions one, required or optional. Settings → "Always draft a
-cover letter" overrides that.
+cover letter" overrides that, and the drawer's Cover letter tab can draft one on demand for any job.
 
 **Fact-check.** Every generated letter, answer and wording suggestion is checked in code against your profile,
 the posting and the company research. A number, percentage, dollar amount, date, email or link that appears in
@@ -150,10 +150,12 @@ dashes as punctuation. The model gets one rewrite; what remains is shown as "rea
 location, deadline). A page that returns 404 or says "no longer accepting applications" marks the job *closed*;
 a past deadline marks it *expired*. Both show as a tag on the row. Autonomous mode refuses those.
 
-**The drawer**, tab by tab: Advice (Advisor output), Overview (summary, fit, this employer's history with you,
-follow-up, requirements, fit flags, referral, account details), Fit (the evaluation above), Materials (the exact PDF, selected skills, what changed, cover letter), Match (next section),
-Answers (every value it typed and where it came from, plus the final screenshot), Activity (the log for this
-job).
+**The drawer**, tab by tab: Overview (the next step, an at-a-glance list of role, fit, tailoring, cover letter and
+match, requirements, fit flags, follow-up, and collapsible referral and account details), Advice (Advisor output),
+Fit (the evaluation above), Materials (the exact PDF, selected skills, what changed), Cover letter (always there:
+read, copy or open the PDF of the draft, or **Generate cover letter** for any job, applied or not; regenerating
+replaces the draft and the fact-check runs again), Match (next section), Answers (every value it typed and where
+it came from, plus the final screenshot), Activity (the log for this job).
 
 **Referrals.** Set a job's referral status to *Pending* and it will not submit until you release it, however
 approved it is. *Received* with a referral link makes the applier open that link instead of the posting.
@@ -175,7 +177,11 @@ torch), and a term only matches a whole word, so "Java" never matches "JavaScrip
 when every term appears, thin when at least half do, missing otherwise. Missing terms are listed per requirement. Eligibility lines ("must be a
 U.S. person") naturally show as missing; that is fine.
 
-The score never blocks anything. Settings → Applying turns it and the GitHub lookup off.
+The score never blocks anything. The rubric is **off by default**: it is the rubric HackerRank published for
+triaging its own intern applications (a real process, but one company's), it carries a bonus for HackerRank's own
+contest, and the same resume scores 10 to 15 points apart between runs, so it costs an AI call per job for a
+number too noisy to decide on. Turn it on under Settings → Applying when you want that lens; the requirements
+coverage check is deterministic and always runs.
 
 ## 7. Companies
 

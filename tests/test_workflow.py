@@ -1234,3 +1234,37 @@ async def test_stop_marks_progress_stopping_and_does_not_wait_for_the_sheet(stor
     assert store.job(job["id"])["status"] == "needs_attention" and "Paused" in store.job(job["id"])["error"]
     await asyncio.sleep(0)
     assert Sheets.calls == 1
+
+
+async def test_letter_on_its_own_keeps_the_status_and_the_rest_of_the_package(store, monkeypatch):
+    """The Cover letter tab's button: drafts the letter with the same checks as Advisor mode, leaves the resume and
+    answers alone, and puts the application back where it was (here: already applied)."""
+    from jobapplier import ai
+    from jobapplier import workflow as wf_module
+    job, _ = store.add_job("https://jobs.example.com/2")
+    store.update(job["id"], {"description": "We need Python.", "company": "Example Robotics", "requirements": ["Python"], "status": "applied",
+                             "package": {"answers": [{"question": "q", "answer": "a", "source": "profile"}], "resume": {"sha256": "keep"}}}, invalidate=False)
+    calls = []
+
+    async def fake_json(self, task, data, stable=None, local_ok=True, fast=False):
+        calls.append(task.split("\n")[0][:40])
+        if task.startswith("Summarize this employer"):
+            return {"summary": "Builds robots.", "products": [], "hq": "", "size": "", "website": "", "hiring_notes": []}
+        if task.startswith("Draft a cover letter"):
+            return {"letter": "Dear team,\n\nI build robots.\n\nThanks."}
+        return {}
+    monkeypatch.setattr(ai.Model, "json", fake_json)
+
+    async def fake_letter(store_, jid, text, identity, date_text):
+        return {"path": "artifacts/x/letter.pdf", "sha256": "def"}
+    monkeypatch.setattr(wf_module, "build_letter", fake_letter)
+    wf = Workflow(store, None, None)
+    wf.start(job["id"], "letter")  # allowed after applying, unlike prepare/advise
+    await wf.tasks[job["id"]]
+    j = store.job(job["id"])
+    assert j["status"] == "applied" and j["error"] == ""
+    p = j["package"]
+    assert p["letter"].startswith("Dear team") and p["letter_pdf"]["path"].endswith("letter.pdf") and p["letter_at"]
+    assert p["letter_check"]["blocking"] == [] and p["answers"][0]["answer"] == "a" and p["resume"]["sha256"] == "keep"
+    assert [c for c in calls if c.startswith("Draft a cover letter")] and not [c for c in calls if c.startswith("Tailor")]
+    assert any("Cover letter drafted" in e["message"] for e in store.events())

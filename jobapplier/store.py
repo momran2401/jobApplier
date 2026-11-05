@@ -41,7 +41,7 @@ DEFAULT_SETTINGS = {
     "max_model_calls": 35, "max_output_tokens": 4000,
     "sheet_sync_enabled": False, "browser_channel": "chrome",
     "tex_main": "", "skills_start": "", "skills_end": "",
-    "always_letter": False, "default_mode": "assisted", "match_enabled": True, "match_github": True,
+    "always_letter": False, "default_mode": "assisted", "match_enabled": False, "match_github": True,
     "autonomous_daily_cap": 10, "autonomous_delay_minutes": 5,
     "sync_enabled": False, "sync_folder": "", "sync_minutes": 1,
     "discover_keywords": "intern, internship, co-op, new grad, early career",

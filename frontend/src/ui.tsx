@@ -105,7 +105,7 @@ export function Markdown({text}: {text: string}) {
   return <div className="md">{out}</div>;
 }
 
-/** Company logo tinted to the page's palette; falls back to initials. Dark logos are inverted so they read on the dark background. */
+/** Company logo tinted to the page's palette; falls back to initials. Light logos are inverted so they read on the cream background. */
 export function Logo({company, name, size = 34}: {company?: Record<string, any> | null, name: string, size?: number}) {
   const [state, setState] = useState<'loading' | 'light' | 'dark' | 'none'>(company?.logo ? 'loading' : 'none');
   useEffect(() => setState(company?.logo ? 'loading' : 'none'), [company?.id, company?.logo]);

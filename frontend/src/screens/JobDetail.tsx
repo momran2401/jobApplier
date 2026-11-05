@@ -1,5 +1,5 @@
 import {useState} from 'react';
-import {ArrowRight, Check, CheckCheck, CircleAlert, Copy, ExternalLink, Lightbulb, Mail, Pause, Play, Search, Trash2, Users, X} from 'lucide-react';
+import {Activity, ArrowRight, Check, CheckCheck, CircleAlert, Copy, ExternalLink, FileText, Gauge, KeyRound, LayoutList, Lightbulb, ListChecks, Mail, MessageSquareText, Pause, PenLine, Play, Search, Sparkles, Target, Trash2, Users, X} from 'lucide-react';
 import {api, Obj, PanelProps} from '../api';
 import {Badge, Button, Empty, Logo, Progress, SavedInput} from '../ui';
 
@@ -10,7 +10,9 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
   const company = (state.companies || []).find((c: Obj) => c.id === job.company_id);
   const copy = (key: string, text: string) => {navigator.clipboard.writeText(text).then(() => {setCopied(key); setTimeout(() => setCopied(''), 2000);}).catch(() => {});};
   const m = p?.match;
-  const tabs = [...(p?.advice_at ? ['advice'] : []), 'overview', ...(job.fit ? ['fit'] : []), 'materials', ...(m ? ['match'] : []), 'answers', 'activity'];
+  const TAB: Obj = {overview: ['Overview', LayoutList], advice: ['Advice', Lightbulb], fit: ['Fit', Target], materials: ['Materials', FileText], letter: ['Cover letter', PenLine], match: ['Match', Gauge], answers: ['Answers', MessageSquareText], activity: ['Activity', Activity]};
+  const tabs = ['overview', ...(p?.advice_at ? ['advice'] : []), ...(job.fit ? ['fit'] : []), 'materials', 'letter', ...(m ? ['match'] : []), 'answers', 'activity'];
+  const letterRunning = state.progress?.[job.id]?.operation === 'letter';
   const cadence = (state.followups || []).find((f: Obj) => f.job_id === job.id);
   const mutate = (changes: Obj) => api(`/jobs/${job.id}`, 'PATCH', {revision: job.revision, ...changes});
   const locked = ['preparing', 'submitting'].includes(job.status);
@@ -29,8 +31,8 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
       </header>
       <div className="drawer-status"><Badge status={job.status}/>{job.referral_status === 'pending' && <Badge status="pending"/>}{['closed', 'expired'].includes(job.posting_status) && <span className="badge s-rejected"><i/>Posting {job.posting_status}</span>}
         <a className="text-link" href={job.url} target="_blank" rel="noreferrer">View posting <ExternalLink size={12}/></a></div>
-      <div className="segmented drawer-tabs">{tabs.map(t =>
-        <button className={view === t ? 'on' : ''} key={t} onClick={() => setView(t)}>{t[0].toUpperCase() + t.slice(1)}{t === 'activity' && events.length ? ` · ${events.length}` : ''}</button>)}</div>
+      <nav className="tabbar" aria-label="Sections">{tabs.map(t => {const [label, Icon] = TAB[t]; const n = t === 'activity' ? events.length : t === 'answers' ? (p?.answers?.length || 0) + (p?.unresolved?.length || 0) : 0;
+        return <button className={view === t ? 'on' : ''} key={t} onClick={() => setView(t)} aria-current={view === t ? 'page' : undefined}><Icon size={14}/>{label}{n > 0 && <em>{n}</em>}{t === 'letter' && p?.letter && <i className="tab-dot" title="A letter is drafted"/>}</button>;})}</nav>
 
       <div className="drawer-body">
         {state.progress?.[job.id] && <Progress p={state.progress[job.id]}/>}
@@ -42,28 +44,32 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
           {job.status_suggestion && <div className="hint warn"><CircleAlert size={16}/><span><strong>An email suggests this is now {job.status_suggestion.status}:</strong> {job.status_suggestion.summary} {job.status_suggestion.reason}
             <span className="row-actions"><Button disabled={!!busy} onClick={() => run('suggestion', () => api(`/jobs/${job.id}/status-suggestion`, 'POST', {accept: true}), 'Status updated.')}>Yes, that’s this one</Button>
               <Button disabled={!!busy} onClick={() => run('suggestion', () => api(`/jobs/${job.id}/status-suggestion`, 'POST', {accept: false}))}>Not this application</Button></span></span></div>}
-          <div className="brief">
-            <div><span>ROLE</span><p>{job.summary || 'Read the posting to extract its requirements and check your fit.'}</p></div>
-            {job.fit && <div><span>FIT</span><p>{job.fit.score != null ? <><b className={'fit-' + job.fit.decision}>{job.fit.score}/5 · {job.fit.label}</b>{job.fit.summary ? ` · ${job.fit.summary}` : ''} · <button className="text-link" onClick={() => setView('fit')}>details</button></> : `Could not score this posting${job.fit.error ? ': ' + job.fit.error : ''}.`}</p></div>}
-            {company?.history?.label && <div><span>THIS EMPLOYER</span><p>{company.history.applied} application{company.history.applied === 1 ? '' : 's'} so far, {company.history.label}{company.history.last_applied ? `; last applied ${company.history.last_applied}` : ''}.</p></div>}
-            <div><span>TAILORING</span><p>{p?.tailoring_summary || 'Your experience stays intact. Skills are tailored once your profile is ready.'}</p></div>
-            {m && <div><span>MATCH</span><p>{m.error ? `Scoring failed: ${m.error}` : <>{m.total}/{m.max} on HackerRank's rubric{m.coverage?.percent != null ? ` · ${m.coverage.percent}% of requirements mentioned` : ''} · <button className="text-link" onClick={() => setView('match')}>details</button></>}</p></div>}
-            <div><span>NEXT STEP</span><p>{nextStep}</p></div>
+          <div className="next-step"><span>NEXT STEP</span><p>{nextStep}</p></div>
+          <div className="sub-panel"><h3>At a glance</h3>
+            <dl className="facts">
+              <dt>Role</dt><dd>{job.summary || 'Not read yet. Use Read job below to pull the requirements from the posting.'}</dd>
+              {job.fit && <><dt>Fit</dt><dd>{job.fit.score != null ? <><b className={'fit-' + job.fit.decision}>{job.fit.score}/5 · {job.fit.label}</b>{job.fit.summary ? <> · {job.fit.summary}</> : ''} <button className="text-link" onClick={() => setView('fit')}>Details <ArrowRight size={12}/></button></> : `Could not score this posting${job.fit.error ? ': ' + job.fit.error : ''}.`}</dd></>}
+              {company?.history?.label && <><dt>This employer</dt><dd>{company.history.applied} application{company.history.applied === 1 ? '' : 's'} so far, {company.history.label}{company.history.last_applied ? `; last applied ${company.history.last_applied}` : ''}.</dd></>}
+              <dt>Tailoring</dt><dd>{p?.tailoring_summary || 'Your experience stays intact. Skills are tailored once your profile is ready.'}</dd>
+              <dt>Cover letter</dt><dd>{p?.letter ? <>Drafted{p.letter_at ? ` ${new Date(p.letter_at).toLocaleDateString()}` : ''}. <button className="text-link" onClick={() => setView('letter')}>Read it <ArrowRight size={12}/></button></> : <>None yet. <button className="text-link" onClick={() => setView('letter')}>Generate one <ArrowRight size={12}/></button></>}</dd>
+              {m && <><dt>Match</dt><dd>{m.error ? `Scoring failed: ${m.error}` : <>{m.total}/{m.max} on HackerRank's intern rubric{m.coverage?.percent != null ? ` · ${m.coverage.percent}% of requirements mentioned` : ''} <button className="text-link" onClick={() => setView('match')}>Details <ArrowRight size={12}/></button></>}</dd></>}
+            </dl>
           </div>
-          {job.requirements?.length > 0 && <div className="sub-panel"><h3>Requirements</h3><div className="skill-cloud">{job.requirements.map((r: string, i: number) => <span key={i}>{r}</span>)}</div></div>}
+          {job.requirements?.length > 0 && <div className="sub-panel"><h3><ListChecks size={16}/>Requirements <em className="count">{job.requirements.length}</em></h3><div className="skill-cloud">{job.requirements.map((r: string, i: number) => <span key={i}>{r}</span>)}</div></div>}
           {['closed', 'expired'].includes(job.posting_status) && <div className="hint warn"><CircleAlert size={16}/><span>This posting looked {job.posting_status} when it was last read ({job.posting_checked_at}). Check the page before spending time on it.</span></div>}
           {job.fit_flags?.length > 0 && <div className="sub-panel warn-panel"><h3>Fit flags</h3><ul>{job.fit_flags.map((f: string, i: number) => <li key={i}>{f}</li>)}</ul>
             {!job.fit_acknowledged && <Button disabled={locked || !!busy} onClick={() => run('fit', () => mutate({fit_acknowledged: true}), 'Fit concerns acknowledged.')}>Continue despite flags</Button>}</div>}
           {cadence && <FollowupPanel job={job} cadence={cadence} run={run} busy={busy} progress={state.progress?.[job.id]} enabled={state.settings.followups_enabled !== false}/>}
-          <div className="sub-panel"><h3><Users size={15}/>Referral</h3><p className="small muted">A pending referral blocks submission, even when everything else is approved.</p>
+          <details className="sub-panel collapsible" open={job.referral_status !== 'not_sought'}><summary><h3><Users size={15}/>Referral</h3><span className="sub-text">{{not_sought: 'Not sought', pending: 'Pending · holds submission', received: 'Received', proceed_without: 'Proceeding without one'}[job.referral_status as string] || ''}</span></summary>
+            <p className="sub-text">A pending referral blocks submission, even when everything else is approved.</p>
             <label className="field">Referral status<select disabled={locked || job.status === 'submitted'} value={job.referral_status} onChange={e => run('referral', () => mutate({referral_status: e.target.value}), 'Referral status updated.')}>
               <option value="not_sought">Not sought</option><option value="pending">Pending referral · hold submission</option>
               <option value="received">Referral received · review before applying</option><option value="proceed_without">Proceed without a referral</option></select></label>
             <SavedInput label="Referral link" value={job.referral_url} disabled={locked} save={v => run('referral', () => mutate({referral_url: v}))}/>
             <SavedInput label="Referral contact" value={job.referral_contact} disabled={locked} save={v => run('referral', () => mutate({referral_contact: v}))}/>
             <SavedInput label="Referral notes" value={job.referral_notes} disabled={locked} save={v => run('referral', () => mutate({referral_notes: v}))}/>
-          </div>
-          <div className="sub-panel"><h3>Account & links</h3>
+          </details>
+          <details className="sub-panel collapsible"><summary><h3><KeyRound size={15}/>Account & links</h3><span className="sub-text">{job.account_email || 'No account recorded'}</span></summary>
             <label className="field">Sign-in method<select disabled={locked} value={job.signin_method} onChange={e => run('signin', () => mutate({signin_method: e.target.value}))}>
               <option value="unknown">Not recorded yet</option><option value="google">Sign in with Google</option><option value="apple">Sign in with Apple</option>
               <option value="email_password">Email and password</option><option value="other">Other</option></select></label>
@@ -71,8 +77,8 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
             <label className="check"><input type="checkbox" disabled={locked} checked={job.account_created} onChange={e => run('account', () => mutate({account_created: e.target.checked}))}/>An account was created for this company</label>
             <div className="links">{[['Application', job.application_url], ['Candidate portal', job.portal_url], ['Application status', job.status_url]].filter(([, url]) => url)
               .map(([label, url]) => <a className="link-chip" key={label} href={url} target="_blank" rel="noreferrer">{label}<ExternalLink size={12}/></a>)}</div>
-            <p className="small muted">Passwords and login tokens are never sent to your sheet.</p>
-          </div>
+            <p className="sub-text">Passwords and login tokens are never sent to your sheet.</p>
+          </details>
           {job.status === 'uncertain' && <div className="sub-panel warn-panel"><h3>Check before retrying</h3><p>Open the candidate portal and verify whether the application arrived.</p>
             <div className="row-actions">
               <Button onClick={() => run('outcome', () => api(`/jobs/${job.id}/resolve-outcome`, 'POST', {revision: job.revision, outcome: 'submitted'}))}>It was submitted</Button>
@@ -90,11 +96,8 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
             {p.resume?.warning && <div className="hint warn">{p.resume.warning}</div>}</div>
           <SkillGaps gaps={p.skill_gaps}/>
           {p.suggested_edits?.length > 0 && <EditsPanel job={job} p={p} run={run} busy={busy} locked={locked}/>}
-          {p.letter && <div className="sub-panel"><div className="sub-head"><h3>Cover letter</h3><div className="row-actions" style={{margin: 0}}>
-            <Button onClick={() => copy('letter', p.letter)}><Copy size={13}/>{copied === 'letter' ? 'Copied' : 'Copy text'}</Button>
-            {p.letter_pdf && <a className="btn" href={'/api/file/' + p.letter_pdf.path} target="_blank" rel="noreferrer">Open PDF <ExternalLink size={13}/></a>}</div></div>
-            <FactCheck c={p.letter_check}/>
-            <div className="letter">{p.letter}</div></div>}
+          <div className="sub-panel"><div className="sub-head"><h3><PenLine size={16}/>Cover letter</h3><Button onClick={() => setView('letter')}>{p.letter ? 'Read the letter' : 'Generate one'} <ArrowRight size={13}/></Button></div>
+            <p className="sub-text">{p.letter ? 'Drafted from your profile and the posting; it lives in its own tab.' : 'The posting did not ask for one, so none was drafted. You can still generate one.'}</p></div>
           {p.likely_questions?.length > 0 && <div className="sub-panel"><h3>Likely application questions</h3>
             {p.likely_questions.map((q: Obj, i: number) => <div className="qa" key={i}><strong>{q.question}</strong>
               <p className={String(q.answer).startsWith('NEEDS:') ? 'warn-text' : ''}>{q.answer || 'Not in your profile yet.'}</p>
@@ -116,10 +119,11 @@ export function JobDetail({job, state, close, run, busy, goProfile}: PanelProps 
           <SkillGaps gaps={p.skill_gaps}/>
           {p.resume?.diff && <div className="sub-panel"><h3>What changed</h3><pre className="diff">{p.resume.diff}</pre></div>}
           {p.suggested_edits?.length > 0 && <EditsPanel job={job} p={p} run={run} busy={busy} locked={locked}/>}
-          {p.letter && <div className="sub-panel"><h3>Cover-letter draft</h3><FactCheck c={p.letter_check}/><div className="letter">{p.letter}</div></div>}
           {canReview && !p.visual_reviewed && <Button primary disabled={!!busy} onClick={() => run('review', () => api(`/jobs/${job.id}/review`, 'POST', {revision: job.revision}), 'Document review recorded.')}><CheckCheck size={15}/>I’ve reviewed the PDF and its layout</Button>}
           {p.visual_reviewed && <span className="ok-text"><CheckCheck size={16}/> Document review complete</span>}
         </>)}
+
+        {view === 'letter' && <LetterPanel job={job} p={p} run={run} busy={busy} locked={locked} running={letterRunning} verified={!!state.profile.verified} copied={copied} copy={copy}/>}
 
         {view === 'fit' && job.fit && <FitPanel f={job.fit}/>}
 
@@ -182,8 +186,8 @@ function MatchPanel({m}: {m: Obj}) {
   if (m.error) return <div className="hint warn"><CircleAlert size={16}/><span>Scoring failed: {m.error}. Prepare or get advice again to retry.</span></div>;
   const pct = (a: number, b: number) => b ? Math.round(100 * a / b) : 0;
   return <>
-    <div className="sub-panel"><div className="sub-head"><h3>HackerRank rubric · {m.total} / {m.max}</h3><span className="small muted">{new Date(m.scored_at).toLocaleDateString()}</span></div>
-      <p className="small muted">{m.caveat}</p>
+    <div className="sub-panel"><div className="sub-head"><h3>HackerRank intern rubric · {m.total} / {m.max}</h3><span className="small muted">{new Date(m.scored_at).toLocaleDateString()}</span></div>
+      <p className="sub-text">{m.caveat} It is the rubric HackerRank published for triaging its own intern applications, not a general standard: open source and projects weigh 65 of 110 points, and one bonus is for HackerRank's own contest. The per-category evidence is the useful part.</p>
       <div className="score-bars">{m.categories.map((c: Obj) => <div className="score-row" key={c.key}>
         <div className="score-head"><strong>{c.label}</strong><span className="mono">{c.score} / {c.max}</span></div>
         <div className="bar"><i style={{width: pct(c.score, c.max) + '%'}}/></div>
@@ -202,6 +206,28 @@ function MatchPanel({m}: {m: Obj}) {
       <p className="small muted">Plain text matching against the tailored PDF, the way a recruiter's keyword search works. Repeatable; no AI involved.</p>
       <ul className="coverage">{m.coverage.requirements.map((r: Obj, i: number) => <li key={i} className={r.level === 'present' || (!r.level && r.covered) ? 'ok' : r.level === 'thin' ? 'thin' : 'miss'}>{r.covered ? <Check size={13}/> : <X size={13}/>}<span>{r.text}</span>{r.missing.length > 0 && <small>{r.level === 'thin' ? 'thin · ' : ''}missing: {r.missing.join(', ')}</small>}</li>)}</ul>
       {m.coverage.thin > 0 && <p className="small muted">Thin: at least half of the requirement’s terms appear. Known spellings count (JS for JavaScript, k8s for Kubernetes); “Java” never matches “JavaScript”.</p>}</div>}
+  </>;
+}
+
+/** The cover letter: read it, copy it, open the PDF, or draft one on demand. Every draft is fact-checked against the profile. */
+function LetterPanel({job, p, run, busy, locked, running, verified, copied, copy}: {job: Obj, p?: Obj, run: PanelProps['run'], busy: string, locked: boolean, running: boolean, verified: boolean, copied: string, copy: (k: string, t: string) => void}) {
+  const generate = () => run('letter', () => api(`/jobs/${job.id}/letter`, 'POST'), 'Drafting a cover letter. It appears here in a minute or two.');
+  const disabled = !!busy || locked || running || !verified;
+  const why = !verified ? 'Verify your profile first: the letter can only use facts from it.' : running ? 'Drafting now.' : locked ? 'Wait for the current run to finish.' : undefined;
+  if (!p?.letter) return <div className="sub-panel letter-empty">
+    <span className="empty-orb"><PenLine size={22}/></span>
+    <h3>No cover letter yet</h3>
+    <p className="sub-text">One is drafted automatically when a posting asks for it (or always, if you turn that on in Settings). Generate one here any time: three to four short paragraphs from your profile, the posting and the company research, checked so it never claims something your profile does not say.</p>
+    <div className="row-actions" style={{margin: 0}}><Button primary disabled={disabled} title={why} onClick={generate}><Sparkles size={15}/>{running ? 'Drafting…' : 'Generate cover letter'}</Button></div>
+  </div>;
+  return <>
+    <div className="sub-panel"><div className="sub-head"><h3><PenLine size={16}/>Cover letter</h3><div className="row-actions" style={{margin: 0}}>
+        <Button onClick={() => copy('letter', p.letter)}><Copy size={13}/>{copied === 'letter' ? 'Copied' : 'Copy text'}</Button>
+        {p.letter_pdf && <a className="btn" href={'/api/file/' + p.letter_pdf.path} target="_blank" rel="noreferrer">Open PDF <ExternalLink size={13}/></a>}
+        <Button disabled={disabled} title={why} onClick={generate}><Sparkles size={13}/>{running ? 'Drafting…' : 'Regenerate'}</Button></div></div>
+      <p className="sub-text">{p.letter_at ? `Drafted ${new Date(p.letter_at).toLocaleString()}. ` : ''}Read it as your own words before you use it; regenerating replaces this draft.</p>
+      <FactCheck c={p.letter_check}/>
+      <div className="letter-sheet">{p.letter}</div></div>
   </>;
 }
 

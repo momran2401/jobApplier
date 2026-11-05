@@ -42,6 +42,9 @@ export default function App() {
     finally {setBusy('');}
   }
   useEffect(() => {if (notice) {const id = setTimeout(() => setNotice(''), 6500); return () => clearTimeout(id);}}, [notice]);
+  // The page behind a dialog must not scroll: the dialog itself (or the overlay) scrolls when it is taller than the window.
+  const overlayOpen = importOpen || logOpen || !!detail;
+  useEffect(() => {document.body.classList.toggle('modal-open', overlayOpen); return () => document.body.classList.remove('modal-open');}, [overlayOpen]);
   useEffect(() => {
     const esc = (e: KeyboardEvent) => {if (e.key === 'Escape') {setImportOpen(false); setLogOpen(false); setDetail(null);}};
     window.addEventListener('keydown', esc);

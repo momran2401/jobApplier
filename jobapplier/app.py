@@ -356,6 +356,14 @@ def create_app(data_dir=None):
         workflow.start(jid, "advise")
         return {"started": True}
 
+    @app.post("/api/jobs/{jid}/letter")
+    async def letter(jid: str):
+        """Draft or redraft the cover letter alone (the Cover letter tab's button). Needs a verified profile."""
+        if not store.profile().get("verified"):
+            raise ValueError("Verify your profile first; the letter can only use facts from it.")
+        workflow.start(jid, "letter")
+        return {"started": True}
+
     @app.post("/api/jobs/{jid}/autonomous")
     async def autonomous(jid: str):
         """Prepare and, if every check passes, submit without a review step. Anything uncertain parks the job instead."""

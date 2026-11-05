@@ -86,6 +86,7 @@ STAGES = {"research": ["Reading posting", "Analyzing requirements"],
           "prepare": ["Checking tracker", "Opening browser", "Reading posting", "Tailoring resume",
                       "Filling application", "Final review"],
           "advise": ["Reading posting", "Researching company", "Tailoring and drafting", "Preparing advice"],
+          "letter": ["Reading posting", "Researching company", "Drafting letter", "Checking letter"],
           "autonomous": ["Checking tracker", "Opening browser", "Reading posting", "Tailoring resume",
                          "Filling application", "Final review", "Submitting"]}
 
@@ -297,7 +298,7 @@ class Workflow:
             raise ValueError("This application is already being processed.")
         job = self.store.job(jid)
         status = job["status"]
-        if status in {"submitted", "submitting", "uncertain"} or (status == "applied" and operation != "research"):
+        if status in {"submitted", "submitting", "uncertain"} or (status == "applied" and operation not in {"research", "letter"}):
             raise ValueError("Check the recorded submission outcome before preparing this application again.")
         company = self.store.company_for(job, create=False)
         if operation != "research" and company and company.get("do_not_apply"):
@@ -334,6 +335,10 @@ class Workflow:
                 self.store.update(jid, {"status": prior if prior in {"applied", "advised", "saved"} else "needs_attention"}, invalidate=prior != "applied")
             elif operation == "advise":
                 await self.advise(jid)
+            elif operation == "letter":
+                await self.letter(jid)
+                # A letter on its own changes nothing about where the application stands.
+                self.store.update(jid, {"status": prior if prior != "preparing" else "needs_attention"}, invalidate=False)
             elif operation == "autonomous":
                 await self.autonomous(jid)
             else:
@@ -457,7 +462,7 @@ class Workflow:
         selected = [i for c in (resume.get("categories") or categories) for i in c["items"]]
         settings = self.store.settings()
         match = None
-        if settings.get("match_enabled", True):
+        if settings.get("match_enabled", False):
             self.detail(jid, "Scoring the tailored resume against the posting (HackerRank rubric + keyword coverage)")
             match = await match_report(model, self.store, resume, job.get("requirements") or [], profiledoc.identity(profile),
                                        previous=(job.get("package") or {}).get("match"), github=settings.get("match_github", True))
@@ -545,10 +550,7 @@ class Workflow:
             if not wants_letter:
                 return "", None
             template = self.store.document_by_kind("cover_template")
-            return await self.write_letter(jid, model, """Draft a cover letter for this job (3-4 short paragraphs, plain text, no placeholders).
-            Use only facts from the profile; do not invent personal connections or company facts beyond the research given.
-            Follow the template's structure and tone when one is given. Return {"letter": "..."}.
-            """ + VOICE, {"template": (template or {}).get("text", "")}, sources, stable={**stable, "company": company.get("research") or {}})
+            return await self.write_letter(jid, model, self.LETTER_TASK, {"template": (template or {}).get("text", "")}, sources, stable={**stable, "company": company.get("research") or {}})
         core, (letter, checked), found = await asyncio.gather(
             self.tailor(jid, model, profile, meta, job, edits=package.get("accepted_edits")), letter_task(),
             model.json(QUESTIONS_TASK, {"requirements": job.get("requirements", [])}, stable=stable, fast=True))
@@ -574,6 +576,37 @@ class Workflow:
                         "attachments": [], "visual_reviewed": False})
         self.store.update(jid, {"package": package, "status": "advised", "mode": job.get("mode") or "advisor", "error": ""}, invalidate=False)
         self.store.event(jid, "Advice ready: tailored skills, resume PDF" + (", cover letter" if letter else "") + ", and likely questions.")
+
+    LETTER_TASK = """Draft a cover letter for this job (3-4 short paragraphs, plain text, no placeholders).
+            Use only facts from the profile; do not invent personal connections or company facts beyond the research given.
+            Follow the template's structure and tone when one is given. Return {"letter": "..."}.
+            """ + VOICE
+
+    async def letter(self, jid):
+        """Draft (or redraft) the cover letter on its own, from the Cover letter tab. Same prompt, fact-check and
+        PDF as Advisor mode; the rest of the package (resume, answers) is left as it is."""
+        profile = self.store.profile_text()
+        model = self.model(jid)
+        job = self.store.job(jid)
+        self.stage(jid, "Reading posting", "Reading the job description")
+        if not job.get("description"):
+            await self.research(jid, model)
+            job = self.store.job(jid)
+        self.stage(jid, "Researching company", "Looking up the employer")
+        company = await self.research_company(jid, model)
+        self.stage(jid, "Drafting letter", "Writing a first draft from your profile and the posting")
+        template = self.store.document_by_kind("cover_template")
+        letter, checked = await self.write_letter(jid, model, self.LETTER_TASK, {"template": (template or {}).get("text", "")},
+                                                  self.sources(profile, job), stable={"profile": profile, "job": job["description"], "company": company.get("research") or {}})
+        if not letter:
+            raise ValueError("The model returned an empty letter. Try again, or check the AI connection in Settings.")
+        self.stage(jid, "Checking letter", "Building the PDF")
+        package = dict(self.store.job(jid).get("package") or {})
+        package.update({"letter": letter, "letter_check": checked, "letter_hash": hashlib.sha256(letter.encode()).hexdigest(),
+                        "letter_pdf": await build_letter(self.store, jid, letter, profiledoc.identity(profile), letter_date()),
+                        "letter_at": now()})
+        self.store.update(jid, {"package": package, "error": ""}, invalidate=False)
+        self.store.event(jid, "Cover letter drafted. Read it before you use it; nothing was sent.")
 
     async def handle_auth(self, jid, page, snapshot, company, profile, package):
         """Sign-in pages are handled by code, never by the model: Google button, saved login, or hand-off.

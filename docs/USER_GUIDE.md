@@ -64,15 +64,15 @@ The Dashboard's **Questions** panel collects everything the assistant needs from
 
 ## Match score
 
-Every tailored resume (Advisor, AI Applier, Autonomous) gets a **Match** tab in the job drawer with two parts:
+Every tailored resume (Advisor, AI Applier, Autonomous) gets a **Match** tab in the job drawer with two parts (the first is off by default; Settings → Applying turns it on):
 
 - **HackerRank rubric**: the scoring prompt and rules from HackerRank's open-source resume scorer
   ([interviewstreet/hiring-agent](https://github.com/interviewstreet/hiring-agent), MIT) run once on the tailored
   PDF text, with public GitHub signals from the GitHub link in your profile when enabled. Categories: open source
   (35), self projects (30), production experience (25), technical skills (10), AI fluency (10), plus capped
   bonuses and deductions; the caps and bonus rules are enforced in code, not by the model. It is one company's
-  intern rubric and the same resume can move about ten points between runs, so read the evidence, not just the
-  number. The score is kept until the resume PDF changes.
+  intern rubric (with a bonus for HackerRank's own contest) and the same resume can move 10 to 15 points between
+  runs, so read the evidence, not just the number. The score is kept until the resume PDF changes.
 - **Requirements mentioned**: which of the posting's extracted requirements the resume text actually contains,
   by plain keyword matching (repeatable, no AI). Missing terms are listed per requirement.
 

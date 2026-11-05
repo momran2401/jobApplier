@@ -52,7 +52,8 @@ Opens http://127.0.0.1:8765. `jobapplier stop` stops it. Keep the server private
    - **Advisor**: tailored skills (Overleaf text + PDF), cover letter, likely questions. You apply yourself.
    - **AI Applier**: fills the form and stops at Review. You approve; it submits.
    - **Autonomous**: submits without review; parks anything uncertain for you. Skills only, daily cap.
-   Every tailored resume gets a **Match** report: HackerRank's open-source resume rubric plus requirement coverage.
+   Every tailored resume gets a **Match** report: requirement coverage, plus (opt-in) HackerRank's intern-triage rubric.
+   Every job has a **Cover letter** tab with a Generate button.
 4. **Questions** on the Dashboard — answer what the assistant can't infer (sign-in method per company,
    eligibility questions). Answers are saved to your profile and reused.
 5. **Tracker** mode — **Log application** for jobs you applied to yourself; the mail icon checks your inbox
